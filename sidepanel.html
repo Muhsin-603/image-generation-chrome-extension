@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Image Gen Automator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="panel-container">
+
+    <header class="panel-header">
+      <div class="logo-mark">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect width="28" height="28" rx="8" fill="url(#logoGrad)"/>
+          <path d="M8 14L12 10L16 14L20 10" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 18L12 14L16 18L20 14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+          <defs>
+            <linearGradient id="logoGrad" x1="0" y1="0" x2="28" y2="28">
+              <stop stop-color="#6C5CE7"/>
+              <stop offset="1" stop-color="#a855f7"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="header-text">
+        <h1>Image Gen Automator</h1>
+        <p class="subtitle">Batch generate images via ChatGPT</p>
+      </div>
+    </header>
+
+
+    <section class="upload-section">
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-zone-icon">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <p class="drop-zone-label">Drop your prompt file here</p>
+        <p class="drop-zone-hint">.pdf, .docx, or .md</p>
+        <input type="file" id="fileInput" accept=".pdf,.docx,.md" hidden>
+      </div>
+
+      <div class="file-info" id="fileInfo" hidden>
+        <div class="file-badge">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <span id="fileName"></span>
+        </div>
+        <button class="btn-icon" id="clearFileButton" title="Remove file">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </section>
+
+
+    <section class="prompts-preview" id="promptsPreview" hidden>
+      <div class="section-header">
+        <h2>Prompts</h2>
+        <span class="prompt-count" id="promptCount">0</span>
+      </div>
+      <ul class="prompt-list" id="promptList"></ul>
+    </section>
+
+
+    <section class="settings-section">
+      <div class="input-group">
+        <label for="downloadFolder">Download Folder</label>
+        <div class="input-with-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          <input type="text" id="downloadFolder" placeholder="generated-images" value="generated-images">
+        </div>
+        <p class="input-hint">Subfolder inside your Downloads directory</p>
+      </div>
+    </section>
+
+
+    <section class="controls-section">
+      <button class="btn btn-primary" id="startButton" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        Start Generation
+      </button>
+
+      <button class="btn btn-secondary" id="scrapeButton" style="width: 100%; margin-top: var(--spacing-sm);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Scrape Chat Images
+      </button>
+
+      <div class="secondary-controls" id="secondaryControls" hidden>
+        <button class="btn btn-secondary" id="pauseButton">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="4" width="4" height="16"/>
+            <rect x="14" y="4" width="4" height="16"/>
+          </svg>
+          Pause
+        </button>
+        <button class="btn btn-danger" id="cancelButton">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+          </svg>
+          Cancel
+        </button>
+      </div>
+    </section>
+
+    <section class="prompts-preview" id="scrapedPreview" hidden>
+      <div class="section-header">
+        <h2>Images Found in Chat</h2>
+        <span class="prompt-count" id="scrapedCount">0</span>
+      </div>
+      <ul class="prompt-list" id="scrapedList"></ul>
+      <button class="btn btn-primary" id="downloadScrapedButton" style="width: 100%; margin-top: var(--spacing-sm);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="8 17 12 21 16 17"/>
+          <line x1="12" y1="12" x2="12" y2="21"/>
+          <path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/>
+        </svg>
+        Download Now
+      </button>
+    </section>
+
+
+    <section class="progress-section" id="progressSection" hidden>
+      <div class="progress-header">
+        <span class="progress-label" id="progressLabel">Processing...</span>
+        <span class="progress-value" id="progressValue">0%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progressBarFill"></div>
+      </div>
+      <p class="current-prompt-text" id="currentPromptText"></p>
+    </section>
+
+
+    <section class="log-section" id="logSection" hidden>
+      <div class="section-header">
+        <h2>Activity Log</h2>
+        <button class="btn-icon" id="clearLogButton" title="Clear log">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </button>
+      </div>
+      <div class="log-entries" id="logEntries"></div>
+    </section>
+
+  </div>
+
+  <script src="lib/mammoth.browser.min.js"></script>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

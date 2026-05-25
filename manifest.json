@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Image Gen Automator",
+  "version": "1.0.0",
+  "description": "Automate ChatGPT image generation from prompt files",
+  "permissions": [
+    "sidePanel",
+    "downloads",
+    "activeTab",
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://chatgpt.com/*"
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Image Gen Automator"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/pdf.worker.min.mjs"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

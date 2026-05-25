@@ -1,0 +1,30 @@
+{
+  "name": "image-generation-chrome-extension",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Muhsin-603/image-generation-chrome-extension.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Muhsin-603/image-generation-chrome-extension/issues"
+  },
+  "homepage": "https://github.com/Muhsin-603/image-generation-chrome-extension#readme",
+  "description": "",
+  "dependencies": {
+    "mammoth": "^1.12.0",
+    "pdfjs-dist": "^5.7.284"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5"
+  }
+}
