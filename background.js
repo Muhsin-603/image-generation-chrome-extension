@@ -26,7 +26,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     CANCEL_GENERATION: () => handleCancelGeneration(),
     GET_STATUS: () => handleGetStatus(sendResponse),
     SCRAPE_CHAT: () => handleScrapeChatRequest(sendResponse),
-    DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse)
+    DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse),
+    ADD_PROMPT: () => handleAddPrompt(message.prompt),
+    REMOVE_PROMPT: () => handleRemovePrompt(message.index)
   };
 
   const handler = handlers[message.type];
@@ -322,4 +324,14 @@ function fetchScrapedDataUrl(tabId, imageUrl) {
       }
     });
   });
+}
+
+function handleAddPrompt(prompt) {
+  STATE.promptQueue.push(prompt);
+}
+
+function handleRemovePrompt(index) {
+  if (index > STATE.currentIndex) {
+    STATE.promptQueue.splice(index, 1);
+  }
 }

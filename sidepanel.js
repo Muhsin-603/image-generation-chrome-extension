@@ -29,11 +29,14 @@ const elements = {
   scrapedPreview: document.getElementById("scrapedPreview"),
   scrapedCount: document.getElementById("scrapedCount"),
   scrapedList: document.getElementById("scrapedList"),
-  downloadScrapedButton: document.getElementById("downloadScrapedButton")
+  downloadScrapedButton: document.getElementById("downloadScrapedButton"),
+  manualPromptInput: document.getElementById("manualPromptInput"),
+  addPromptButton: document.getElementById("addPromptButton")
 };
 
 let parsedPrompts = [];
 let scrapedImages = [];
+let currentActiveIndex = 0;
 let isPaused = false;
 
 
@@ -47,6 +50,12 @@ function initializeEventListeners() {
   elements.clearLogButton.addEventListener("click", clearLog);
   elements.scrapeButton.addEventListener("click", startScraping);
   elements.downloadScrapedButton.addEventListener("click", downloadScrapedImages);
+  elements.addPromptButton.addEventListener("click", addManualPrompt);
+  elements.manualPromptInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      addManualPrompt();
+    }
+  });
 
   elements.dropZone.addEventListener("dragover", handleDragOver);
   elements.dropZone.addEventListener("dragleave", handleDragLeave);
@@ -179,8 +188,18 @@ function renderPromptsList(prompts) {
     removeButton.className = "btn-remove-prompt";
     removeButton.title = "Remove prompt";
     removeButton.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+    const isGenerationActive = elements.startButton.hidden;
+    if (isGenerationActive && index <= currentActiveIndex) {
+      removeButton.disabled = true;
+      removeButton.style.opacity = "0.2";
+      removeButton.style.cursor = "not-allowed";
+    }
+
     removeButton.addEventListener("click", () => {
-      removePromptAt(index);
+      if (!removeButton.disabled) {
+        removePromptAt(index);
+      }
     });
 
     listItem.appendChild(indexSpan);
@@ -193,7 +212,14 @@ function renderPromptsList(prompts) {
 function removePromptAt(index) {
   parsedPrompts.splice(index, 1);
   renderPromptsList(parsedPrompts);
-  elements.startButton.disabled = parsedPrompts.length === 0;
+
+  if (!elements.startButton.hidden) {
+    elements.startButton.disabled = parsedPrompts.length === 0;
+  } else {
+    highlightActivePrompt(currentActiveIndex);
+    chrome.runtime.sendMessage({ type: "REMOVE_PROMPT", index: index });
+    updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
+  }
 }
 
 function hidePromptsPreview() {
@@ -342,6 +368,7 @@ function formatCurrentTime() {
 function handleProgressUpdate(message) {
   const statusHandlers = {
     processing: () => {
+      currentActiveIndex = message.currentIndex;
       updateProgress(message.currentIndex, message.totalPrompts, message.message);
       highlightActivePrompt(message.currentIndex);
       elements.currentPromptText.textContent = message.currentPrompt || "";
@@ -354,6 +381,7 @@ function handleProgressUpdate(message) {
     },
 
     completed: () => {
+      currentActiveIndex = 0;
       updateProgress(message.totalProcessed, message.totalProcessed, "All done!");
       switchToIdleState();
       addLogEntry(message.message, "success");
@@ -369,6 +397,7 @@ function handleProgressUpdate(message) {
     },
 
     cancelled: () => {
+      currentActiveIndex = 0;
       switchToIdleState();
     },
 
@@ -472,6 +501,25 @@ function downloadScrapedImages() {
   updateProgress(0, scrapedImages.length, "Starting download...");
   elements.logSection.hidden = false;
   addLogEntry("Starting bulk download of " + scrapedImages.length + " scraped images...", "success");
+}
+
+
+function addManualPrompt() {
+  const text = elements.manualPromptInput.value.trim();
+  if (text) {
+    parsedPrompts.push(text);
+    renderPromptsList(parsedPrompts);
+
+    if (!elements.startButton.hidden) {
+      elements.startButton.disabled = false;
+    } else {
+      highlightActivePrompt(currentActiveIndex);
+      chrome.runtime.sendMessage({ type: "ADD_PROMPT", prompt: text });
+      updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
+    }
+
+    elements.manualPromptInput.value = "";
+  }
 }
 
 
