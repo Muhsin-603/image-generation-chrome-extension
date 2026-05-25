@@ -194,11 +194,13 @@ function isGeneratedImageUrl(url) {
     "oaidalleapiprodscus",
     "dall-e",
     "openai",
+    "oaiusercontent",
     "blob:",
     ".png",
     ".jpg",
     ".jpeg",
-    ".webp"
+    ".webp",
+    "format="
   ];
 
   const excludePatterns = [
@@ -207,8 +209,7 @@ function isGeneratedImageUrl(url) {
     "logo",
     "favicon",
     "profile",
-    "emoji",
-    "thumb"
+    "emoji"
   ];
 
   const urlLower = url.toLowerCase();
@@ -361,7 +362,45 @@ function scrapeChatImages() {
     }
   });
 
-  return results;
+  if (results.length === 0) {
+    const allImages = document.querySelectorAll("img");
+    allImages.forEach(img => {
+      const src = img.src || img.getAttribute("src");
+      if (src && isGeneratedImageUrl(src)) {
+        let promptText = "scraped-image";
+        const parentMessage = img.closest("[data-message-author-role='assistant']") || img.closest("article");
+
+        if (parentMessage) {
+          let prev = parentMessage.previousElementSibling;
+          while (prev) {
+            const hasUserRole = prev.getAttribute && (prev.getAttribute("data-message-author-role") === "user" || prev.querySelector("[data-message-author-role='user']"));
+            if (hasUserRole) {
+              promptText = prev.textContent || promptText;
+              break;
+            }
+            prev = prev.previousElementSibling;
+          }
+        }
+
+        results.push({
+          promptText: promptText.trim(),
+          imageUrl: src
+        });
+      }
+    });
+  }
+
+  const uniqueResults = [];
+  const seenUrls = new Set();
+
+  results.forEach(item => {
+    if (!seenUrls.has(item.imageUrl)) {
+      seenUrls.add(item.imageUrl);
+      uniqueResults.push(item);
+    }
+  });
+
+  return uniqueResults;
 }
 
 function handleScrapeChat(sendResponse) {

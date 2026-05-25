@@ -420,24 +420,38 @@ function handleProgressUpdate(message) {
 
 
 function startScraping() {
+  showLogSection();
   addLogEntry("Scraping chat images...");
+  elements.scrapeButton.disabled = true;
+  elements.scrapeButton.innerHTML = `<span class="spinner"></span>Scraping...`;
+
+  const startTime = Date.now();
+
   chrome.runtime.sendMessage({ type: "SCRAPE_CHAT" }, response => {
-    if (chrome.runtime.lastError) {
-      addLogEntry("Scrape failed: " + chrome.runtime.lastError.message, "error");
-      return;
-    }
-    if (response && response.success) {
-      scrapedImages = response.items;
-      if (scrapedImages.length === 0) {
-        addLogEntry("No generated images found in the chat.", "warning");
-        elements.scrapedPreview.hidden = true;
-      } else {
-        renderScrapedList(scrapedImages);
-        addLogEntry(`Found ${scrapedImages.length} images in the chat.`, "success");
+    const elapsed = Date.now() - startTime;
+    const remainingDelay = Math.max(0, 800 - elapsed);
+
+    setTimeout(() => {
+      elements.scrapeButton.disabled = false;
+      elements.scrapeButton.innerHTML = "Scrape Chat Images";
+
+      if (chrome.runtime.lastError) {
+        addLogEntry("Scrape failed: " + chrome.runtime.lastError.message, "error");
+        return;
       }
-    } else {
-      addLogEntry("Scrape failed: " + (response ? response.error : "Unknown error"), "error");
-    }
+      if (response && response.success) {
+        scrapedImages = response.items;
+        if (scrapedImages.length === 0) {
+          addLogEntry("No generated images found in the chat.", "warning");
+          elements.scrapedPreview.hidden = true;
+        } else {
+          renderScrapedList(scrapedImages);
+          addLogEntry(`Found ${scrapedImages.length} images in the chat.`, "success");
+        }
+      } else {
+        addLogEntry("Scrape failed: " + (response ? response.error : "Unknown error"), "error");
+      }
+    }, remainingDelay);
   });
 }
 
