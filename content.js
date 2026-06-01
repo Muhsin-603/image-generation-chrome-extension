@@ -162,10 +162,26 @@ function waitForImageGeneration(messageCountBeforeSend) {
       const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
       if (assistantMessages.length <= messageCountBeforeSend) return false;
 
-      const stopButton = document.querySelector('button[aria-label="Stop generating"]');
-      const isStillGenerating = stopButton && stopButton.offsetParent !== null;
+      // 1. Look for any active stop button in the DOM
+      const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
+                         document.querySelector('button[aria-label*="Stop"]') ||
+                         document.querySelector('button[aria-label*="Cancel"]') ||
+                         Array.from(document.querySelectorAll('button')).find(btn => {
+                           const svg = btn.querySelector('svg');
+                           return svg && (svg.querySelector('rect') || btn.innerHTML.includes('rect'));
+                         });
 
-      return !isStillGenerating;
+      if (stopButton && stopButton.offsetParent !== null) {
+        return false; // Stop button is visible, still generating
+      }
+
+      // 2. Look for the Send button. If the Send button is back and visible, generating is done!
+      const sendButton = findSendButton();
+      if (sendButton && sendButton.offsetParent !== null) {
+        return true;
+      }
+
+      return false; // Wait for state to settle
     };
 
     checkIntervalId = setInterval(() => {
@@ -180,22 +196,19 @@ function waitForImageGeneration(messageCountBeforeSend) {
         return;
       }
 
+      // Response is complete, but no DALL-E image was generated.
+      cleanup();
+      
       const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+      let errorMsg = "Response completed but no image was found.";
       if (assistantMessages.length > messageCountBeforeSend) {
         const latestMessage = assistantMessages[assistantMessages.length - 1];
-        const messageText = latestMessage.textContent || "";
-
-        if (messageText.length > 50 && !messageText.includes("generating")) {
-          cleanup();
-
-          const anyImage = latestMessage.querySelector("img");
-          if (anyImage && anyImage.src) {
-            resolve(anyImage.src);
-          } else {
-            reject(new Error("Response completed but no image was found. ChatGPT may have responded with text only."));
-          }
+        const responseText = (latestMessage.textContent || "").trim();
+        if (responseText) {
+          errorMsg = `ChatGPT responded: "${responseText}"`;
         }
       }
+      reject(new Error(errorMsg));
     }, TIMEOUTS.ELEMENT_POLL_INTERVAL);
 
     timeoutId = setTimeout(() => {

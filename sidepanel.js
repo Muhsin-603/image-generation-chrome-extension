@@ -210,15 +210,29 @@ function renderPromptsList(prompts) {
 }
 
 function removePromptAt(index) {
-  parsedPrompts.splice(index, 1);
-  renderPromptsList(parsedPrompts);
+  const isGenerationActive = elements.startButton.hidden;
 
-  if (!elements.startButton.hidden) {
+  if (!isGenerationActive) {
+    // Idle state: modify locally and re-render
+    parsedPrompts.splice(index, 1);
+    renderPromptsList(parsedPrompts);
     elements.startButton.disabled = parsedPrompts.length === 0;
   } else {
-    highlightActivePrompt(currentActiveIndex);
-    chrome.runtime.sendMessage({ type: "REMOVE_PROMPT", index: index });
-    updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
+    // Active state: request deletion from background script
+    chrome.runtime.sendMessage({ type: "REMOVE_PROMPT", index: index }, response => {
+      if (chrome.runtime.lastError) {
+        addLogEntry("Failed to remove prompt: " + chrome.runtime.lastError.message, "error");
+        return;
+      }
+      if (response && response.success) {
+        parsedPrompts.splice(index, 1);
+        renderPromptsList(parsedPrompts);
+        highlightActivePrompt(currentActiveIndex);
+        updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
+      } else {
+        addLogEntry("Cannot remove prompt that has already been processed or is active", "warning");
+      }
+    });
   }
 }
 

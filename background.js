@@ -78,13 +78,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       SCRAPE_CHAT: () => handleScrapeChatRequest(sendResponse),
       DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse),
       ADD_PROMPT: () => handleAddPrompt(message.prompt),
-      REMOVE_PROMPT: () => handleRemovePrompt(message.index)
+      REMOVE_PROMPT: () => sendResponse({ success: handleRemovePrompt(message.index) })
     };
 
     const handler = handlers[message.type];
     if (handler) {
       handler();
-      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED"];
+      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED", "REMOVE_PROMPT"];
       if (!exclusions.includes(message.type)) {
         sendResponse({ received: true });
       }
@@ -394,5 +394,7 @@ function handleRemovePrompt(index) {
   if (index > STATE.currentIndex) {
     STATE.promptQueue.splice(index, 1);
     saveState();
+    return true;
   }
+  return false;
 }
