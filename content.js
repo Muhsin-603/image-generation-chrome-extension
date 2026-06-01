@@ -41,6 +41,48 @@ function findStopButton() {
          document.querySelector('button[aria-label*="Stop" i]');
 }
 
+function isMessageStreaming(messageElement) {
+  if (!messageElement) return false;
+  
+  // Check common streaming classes/selectors on ChatGPT
+  return messageElement.classList.contains("result-streaming") ||
+         messageElement.querySelector(".result-streaming") ||
+         messageElement.querySelector('[class*="result-streaming"]') ||
+         messageElement.querySelector('.cursor') ||
+         messageElement.querySelector('[class*="cursor"]') ||
+         messageElement.querySelector('.typing-indicator') ||
+         messageElement.querySelector('[class*="typing"]');
+}
+
+function isMarkdownRenderedImage(img) {
+  if (!img) return false;
+  
+  const src = img.src || img.getAttribute("src") || "";
+  const alt = img.getAttribute("alt") || "";
+  const className = img.className || "";
+
+  // Generated images must have a src and a non-empty alt (the description)
+  if (!src || !alt) return false;
+
+  // Exclude avatars, UI icons, formulas, and emojis
+  const excludeKeywords = ["avatar", "profile", "icon", "logo", "emoji", "favicon", "math", "katex", "formula"];
+  const matchesExclude = excludeKeywords.some(keyword => {
+    return src.toLowerCase().includes(keyword) || 
+           alt.toLowerCase().includes(keyword) || 
+           className.toLowerCase().includes(keyword);
+  });
+
+  if (matchesExclude) return false;
+
+  // Verify it is inside the assistant message content (markdown/prose)
+  const isInsideContent = img.closest(".markdown") || 
+                          img.closest(".prose") || 
+                          img.closest('[class*="markdown"]') || 
+                          img.closest('[class*="prose"]');
+  
+  return !!isInsideContent;
+}
+
 function findChatContainer() {
   const presentationContainer = document.querySelector(SELECTORS.CHAT_CONTAINER);
   if (presentationContainer) return presentationContainer;
@@ -155,81 +197,66 @@ function waitForImageGeneration(messageCountBeforeSend) {
       const imageElements = latestMessage.querySelectorAll("img");
 
       for (const img of imageElements) {
-        const imageSource = img.src || img.getAttribute("src");
-        if (imageSource && isGeneratedImageUrl(imageSource)) {
-          return imageSource;
+        if (isMarkdownRenderedImage(img)) {
+          return img;
         }
       }
 
-      const downloadLinks = latestMessage.querySelectorAll('a[href]');
+      // Fallback: check links inside the markdown/prose content
+      const downloadLinks = latestMessage.querySelectorAll(".markdown a[href], .prose a[href], [class*='markdown'] a[href], [class*='prose'] a[href]");
       for (const link of downloadLinks) {
         const href = link.href || link.getAttribute("href");
-        if (href && isGeneratedImageUrl(href)) {
-          return href;
+        if (href) {
+          const hrefLower = href.toLowerCase();
+          const matchesPattern = href.startsWith("blob:") || 
+                                 href.startsWith("data:") ||
+                                 hrefLower.includes("oaiusercontent") || 
+                                 hrefLower.includes("openai") || 
+                                 hrefLower.includes("dall-e") ||
+                                 hrefLower.includes(".png") ||
+                                 hrefLower.includes(".jpg") ||
+                                 hrefLower.includes(".jpeg") ||
+                                 hrefLower.includes(".webp");
+          if (matchesPattern) {
+            return link;
+          }
         }
       }
 
       return null;
     };
 
-    const isResponseComplete = () => {
-      // Look for the Send button and the Stop button.
-      const sendButton = findSendButton();
-      const stopButton = findStopButton();
-
-      // If a stop button exists, we are definitely still generating.
-      if (stopButton) {
-        return false;
-      }
-
-      // If the send button exists and is visible, then we are done generating.
-      // Note: the send button is usually disabled when the prompt input field is empty,
-      // so we do not require it to be enabled.
-      if (sendButton && sendButton.offsetParent !== null) {
-        return true;
-      }
-
-      return false; // Wait for state to settle
-    };
-
-    let generationStarted = false;
     let completionDetectedTime = null;
 
     checkIntervalId = setInterval(() => {
       dismissComparisonDialog();
 
       const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
-      const isComplete = isResponseComplete();
-
-      // If the response completed before we detected the start (e.g. instant policy violation)
-      if (assistantMessages.length > messageCountBeforeSend && isComplete) {
-        generationStarted = true;
+      if (assistantMessages.length <= messageCountBeforeSend) {
+        return; // Wait for the assistant response to start appearing
       }
 
-      if (!generationStarted) {
-        const sendButton = findSendButton();
-        
-        // Generation has started if the message count increased AND (send button is disabled, hidden, or absent)
-        const isGenerating = !sendButton || sendButton.offsetParent === null || sendButton.disabled || sendButton.hasAttribute('disabled');
+      const latestMessage = assistantMessages[assistantMessages.length - 1];
 
-        if (assistantMessages.length > messageCountBeforeSend && isGenerating) {
-          generationStarted = true;
-        }
-        return; // Wait for the next poll to check completion
+      // First, check if the image has already appeared in the latest message.
+      const imgElement = checkForNewImage();
+      if (imgElement) {
+        cleanup();
+        resolve(imgElement);
+        return;
       }
 
-      if (!isComplete) return;
+      // Check if the latest message is still actively streaming/typing.
+      const isStreaming = isMessageStreaming(latestMessage);
+      if (isStreaming) {
+        // Reset completion timer since generation is still actively running
+        completionDetectedTime = null;
+        return;
+      }
 
-      // Start the grace period timer when isComplete first becomes true
+      // Start the grace period timer when streaming first stops
       if (completionDetectedTime === null) {
         completionDetectedTime = Date.now();
-      }
-
-      const imageUrl = checkForNewImage();
-      if (imageUrl) {
-        cleanup();
-        resolve(imageUrl);
-        return;
       }
 
       // If we've waited less than the grace period (5 seconds), keep waiting for the image to be appended
@@ -238,16 +265,13 @@ function waitForImageGeneration(messageCountBeforeSend) {
         return; // Wait for the next tick
       }
 
-      // Response is complete, but no DALL-E image was generated.
+      // Response is complete and grace period has expired, but no DALL-E image was found.
       cleanup();
       
       let errorMsg = "Response completed but no image was found.";
-      if (assistantMessages.length > messageCountBeforeSend) {
-        const latestMessage = assistantMessages[assistantMessages.length - 1];
-        const responseText = (latestMessage.textContent || "").trim();
-        if (responseText) {
-          errorMsg = `ChatGPT responded: "${responseText}"`;
-        }
+      const responseText = (latestMessage.textContent || "").trim();
+      if (responseText) {
+        errorMsg = `ChatGPT responded: "${responseText}"`;
       }
       reject(new Error(errorMsg));
     }, TIMEOUTS.ELEMENT_POLL_INTERVAL);
@@ -255,9 +279,9 @@ function waitForImageGeneration(messageCountBeforeSend) {
     timeoutId = setTimeout(() => {
       cleanup();
 
-      const imageUrl = checkForNewImage();
-      if (imageUrl) {
-        resolve(imageUrl);
+      const imgElement = checkForNewImage();
+      if (imgElement) {
+        resolve(imgElement);
         return;
       }
 
@@ -266,38 +290,7 @@ function waitForImageGeneration(messageCountBeforeSend) {
   });
 }
 
-function isGeneratedImageUrl(url) {
-  if (!url) return false;
-  if (url.startsWith("data:image/")) return true;
-  if (url.startsWith("blob:")) return true;
 
-  const imagePatterns = [
-    "oaidalleapiprodscus",
-    "dall-e",
-    "openai",
-    "oaiusercontent",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".webp",
-    "format="
-  ];
-
-  const excludePatterns = [
-    "avatar",
-    "icon",
-    "logo",
-    "favicon",
-    "profile",
-    "emoji"
-  ];
-
-  const urlLower = url.toLowerCase();
-  const matchesImagePattern = imagePatterns.some(pattern => urlLower.includes(pattern));
-  const matchesExcludePattern = excludePatterns.some(pattern => urlLower.includes(pattern));
-
-  return matchesImagePattern && !matchesExcludePattern;
-}
 
 function dismissComparisonDialog() {
   const skipButton = document.querySelector(SELECTORS.COMPARISON_SKIP);
@@ -334,15 +327,41 @@ function findDownloadButtonForImage() {
   if (assistantMessages.length === 0) return null;
 
   const latestMessage = assistantMessages[assistantMessages.length - 1];
-  const downloadButton = latestMessage.querySelector('button[aria-label*="ownload"]');
-  if (downloadButton) return downloadButton;
+  
+  // Try selectors for download buttons or links
+  const selectors = [
+    'button[aria-label*="ownload" i]',
+    'button[title*="ownload" i]',
+    'a[aria-label*="ownload" i]',
+    'a[title*="ownload" i]',
+    'a[download]',
+    'button[data-testid*="download" i]'
+  ];
 
+  for (const selector of selectors) {
+    const btn = latestMessage.querySelector(selector);
+    if (btn) return btn;
+  }
+
+  // Iterate over all buttons as fallback
   const allButtons = latestMessage.querySelectorAll("button");
   for (const button of allButtons) {
     const label = (button.getAttribute("aria-label") || "").toLowerCase();
+    const title = (button.getAttribute("title") || "").toLowerCase();
     const text = (button.textContent || "").toLowerCase();
-    if (label.includes("download") || text.includes("download")) {
+    if (label.includes("download") || title.includes("download") || text.includes("download")) {
       return button;
+    }
+  }
+
+  // Iterate over all links as fallback
+  const allLinks = latestMessage.querySelectorAll("a");
+  for (const link of allLinks) {
+    const label = (link.getAttribute("aria-label") || "").toLowerCase();
+    const title = (link.getAttribute("title") || "").toLowerCase();
+    const text = (link.textContent || "").toLowerCase();
+    if (label.includes("download") || title.includes("download") || text.includes("download") || link.hasAttribute("download")) {
+      return link;
     }
   }
 
@@ -354,14 +373,115 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function triggerModalDownload(imgElement) {
+  if (!imgElement) return false;
+
+  try {
+    // 1. Click the image to open the modal
+    imgElement.click();
+
+    // 2. Wait for the modal/lightbox to appear in the DOM (prioritizing ARIA role="dialog")
+    const modalSelector = '[role="dialog"], div[role="dialog"], div[class*="lightbox"], div[class*="modal"]';
+    let modal = null;
+    for (let i = 0; i < 30; i++) {
+      modal = document.querySelector(modalSelector);
+      if (modal) break;
+      await delay(100);
+    }
+
+    if (!modal) {
+      console.warn("Modal not found after click. Trying to click download button on the page directly.");
+      const directBtn = findDownloadButtonForImage();
+      if (directBtn) {
+        directBtn.click();
+        return true;
+      }
+      return false;
+    }
+
+    // Explicit delay (500ms) to allow React to mount the modal DOM and complete opacity/CSS transitions
+    await delay(500);
+
+    // 3. Find the download button inside the modal and click it
+    let downloadBtn = modal.querySelector('button[aria-label*="ownload" i], a[aria-label*="ownload" i], button[title*="ownload" i]');
+    if (!downloadBtn) {
+      const buttons = modal.querySelectorAll("button, a");
+      for (const btn of buttons) {
+        const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+        const title = (btn.getAttribute("title") || "").toLowerCase();
+        const text = (btn.textContent || "").toLowerCase();
+        if (label.includes("download") || title.includes("download") || text.includes("download") || btn.hasAttribute("download")) {
+          downloadBtn = btn;
+          break;
+        }
+      }
+    }
+
+    if (downloadBtn) {
+      downloadBtn.click();
+      await delay(800); // Give it a moment to trigger the download
+    } else {
+      console.warn("Download button not found in modal.");
+    }
+
+    // 4. Find the close button inside the modal and click it
+    let closeBtn = modal.querySelector('button[aria-label*="lose" i], button[title*="lose" i]');
+    if (!closeBtn) {
+      const buttons = modal.querySelectorAll("button");
+      for (const btn of buttons) {
+        const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+        const title = (btn.getAttribute("title") || "").toLowerCase();
+        const text = (btn.textContent || "").toLowerCase();
+        if (label.includes("close") || title.includes("close") || text.includes("close") || text.includes("cancel")) {
+          closeBtn = btn;
+          break;
+        }
+      }
+    }
+
+    if (closeBtn) {
+      closeBtn.click();
+    } else {
+      // Press Escape key programmatically to close the dialog.
+      // Set bubbles: true and composed: true so React delegators capture it at root.
+      const escEvent = new KeyboardEvent("keydown", {
+        key: "Escape",
+        keyCode: 27,
+        code: "Escape",
+        which: 27,
+        bubbles: true,
+        cancelable: true,
+        composed: true
+      });
+      
+      const target = document.activeElement || modal || document;
+      target.dispatchEvent(escEvent);
+    }
+
+    return true;
+  } catch (err) {
+    console.error("Error in triggerModalDownload:", err);
+    return false;
+  }
+}
+
 async function processPrompt(promptText) {
   const messageCountBeforeSend = countAssistantMessages();
 
   typePromptText(promptText);
   await clickSendButtonWhenEnabled();
 
-  const imageUrl = await waitForImageGeneration(messageCountBeforeSend);
-  return imageUrl;
+  const imgElement = await waitForImageGeneration(messageCountBeforeSend);
+  
+  let downloadTriggered = false;
+  if (imgElement) {
+    downloadTriggered = await triggerModalDownload(imgElement);
+  }
+
+  // Extract the image source for reporting/displaying in sidepanel
+  const imageUrl = imgElement ? extractHighResImageUrl(imgElement) : null;
+
+  return { imageUrl, downloadTriggered };
 }
 
 
@@ -415,11 +535,14 @@ function handleStartPrompt(message, sendResponse) {
 
   isProcessing = true;
   processPrompt(message.promptText)
-    .then(async (imageUrl) => {
+    .then(async (result) => {
       if (!isProcessing) return;
 
+      const { imageUrl, downloadTriggered } = result;
       let dataUrl = imageUrl;
-      if (imageUrl && imageUrl.startsWith("blob:")) {
+
+      // If download was not triggered natively, and the URL is a local blob, try to convert to data URL as fallback.
+      if (!downloadTriggered && imageUrl && imageUrl.startsWith("blob:")) {
         try {
           dataUrl = await fetchAsDataUrl(imageUrl);
         } catch (err) {
@@ -432,7 +555,9 @@ function handleStartPrompt(message, sendResponse) {
         runId: message.runId,
         index: message.index,
         success: true,
-        dataUrl: dataUrl
+        dataUrl: dataUrl,
+        imageUrl: imageUrl,
+        downloadTriggered: downloadTriggered
       });
     })
     .catch((error) => {
@@ -462,12 +587,14 @@ function scrapeChatImages() {
     } else if (role === "assistant") {
       const images = message.querySelectorAll("img");
       images.forEach(img => {
-        const src = img.src || img.getAttribute("src");
-        if (src && isGeneratedImageUrl(src)) {
-          results.push({
-            promptText: lastUserPrompt.trim(),
-            imageUrl: src
-          });
+        if (isMarkdownRenderedImage(img)) {
+          const src = extractHighResImageUrl(img);
+          if (src) {
+            results.push({
+              promptText: lastUserPrompt.trim(),
+              imageUrl: src
+            });
+          }
         }
       });
     }
@@ -476,27 +603,29 @@ function scrapeChatImages() {
   if (results.length === 0) {
     const allImages = document.querySelectorAll("img");
     allImages.forEach(img => {
-      const src = img.src || img.getAttribute("src");
-      if (src && isGeneratedImageUrl(src)) {
-        let promptText = "scraped-image";
-        const parentMessage = img.closest("[data-message-author-role='assistant']") || img.closest("article");
+      if (isMarkdownRenderedImage(img)) {
+        const src = extractHighResImageUrl(img);
+        if (src) {
+          let promptText = "scraped-image";
+          const parentMessage = img.closest("[data-message-author-role='assistant']") || img.closest("article");
 
-        if (parentMessage) {
-          let prev = parentMessage.previousElementSibling;
-          while (prev) {
-            const hasUserRole = prev.getAttribute && (prev.getAttribute("data-message-author-role") === "user" || prev.querySelector("[data-message-author-role='user']"));
-            if (hasUserRole) {
-              promptText = prev.textContent || promptText;
-              break;
+          if (parentMessage) {
+            let prev = parentMessage.previousElementSibling;
+            while (prev) {
+              const hasUserRole = prev.getAttribute && (prev.getAttribute("data-message-author-role") === "user" || prev.querySelector("[data-message-author-role='user']"));
+              if (hasUserRole) {
+                promptText = prev.textContent || promptText;
+                break;
+              }
+              prev = prev.previousElementSibling;
             }
-            prev = prev.previousElementSibling;
           }
-        }
 
-        results.push({
-          promptText: promptText.trim(),
-          imageUrl: src
-        });
+          results.push({
+            promptText: promptText.trim(),
+            imageUrl: src
+          });
+        }
       }
     });
   }

@@ -290,26 +290,42 @@ async function handlePromptCompleted(message, sendResponse) {
   const currentPrompt = STATE.promptQueue[STATE.currentIndex];
 
   try {
-    if (message.success && message.dataUrl) {
-      let finalDataUrl = message.dataUrl;
+    if (message.success) {
+      if (message.downloadTriggered) {
+        console.log(`Image ${promptNumber} was downloaded natively by content script. Skipping background download.`);
+        broadcastProgress({
+          status: "downloaded",
+          currentIndex: STATE.currentIndex,
+          totalPrompts: totalPrompts,
+          message: `Downloaded image ${promptNumber} of ${totalPrompts} (native)`
+        });
+      } else if (message.dataUrl) {
+        let finalDataUrl = message.dataUrl;
 
-      if (finalDataUrl.startsWith("blob:")) {
-        try {
-          finalDataUrl = await fetchScrapedDataUrl(STATE.chatGptTabId, finalDataUrl);
-        } catch (err) {
-          console.error("Failed to resolve blob URL:", err);
-          throw new Error("Failed to resolve blob URL: " + err.message);
+        if (finalDataUrl.startsWith("blob:")) {
+          try {
+            finalDataUrl = await fetchScrapedDataUrl(STATE.chatGptTabId, finalDataUrl);
+          } catch (err) {
+            console.error("Failed to resolve blob URL:", err);
+            throw new Error("Failed to resolve blob URL: " + err.message);
+          }
         }
+
+        await downloadGeneratedImage(finalDataUrl, STATE.currentIndex, currentPrompt);
+
+        broadcastProgress({
+          status: "downloaded",
+          currentIndex: STATE.currentIndex,
+          totalPrompts: totalPrompts,
+          message: `Downloaded image ${promptNumber} of ${totalPrompts}`
+        });
+      } else {
+        broadcastProgress({
+          status: "warning",
+          currentIndex: STATE.currentIndex,
+          message: `Prompt ${promptNumber}: Completed successfully but no image URL was found.`
+        });
       }
-
-      await downloadGeneratedImage(finalDataUrl, STATE.currentIndex, currentPrompt);
-
-      broadcastProgress({
-        status: "downloaded",
-        currentIndex: STATE.currentIndex,
-        totalPrompts: totalPrompts,
-        message: `Downloaded image ${promptNumber} of ${totalPrompts}`
-      });
     } else {
       broadcastProgress({
         status: "warning",
