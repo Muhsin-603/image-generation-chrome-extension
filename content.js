@@ -25,7 +25,20 @@ function findPromptInput() {
 function findSendButton() {
   const primaryButton = document.querySelector(SELECTORS.SEND_BUTTON);
   if (primaryButton) return primaryButton;
-  return document.querySelector(SELECTORS.SEND_BUTTON_FALLBACK);
+  const fallback = document.querySelector(SELECTORS.SEND_BUTTON_FALLBACK);
+  if (fallback) return fallback;
+
+  // Broader case-insensitive and structural fallbacks
+  return document.querySelector('button[aria-label*="Send" i]') || 
+         document.querySelector('button[data-testid*="send" i]') ||
+         document.querySelector('form button[type="submit"]') ||
+         document.querySelector('form button:last-of-type');
+}
+
+function findStopButton() {
+  return document.querySelector('button[data-testid="stop-button"]') || 
+         document.querySelector('button[data-testid*="stop" i]') || 
+         document.querySelector('button[aria-label*="Stop" i]');
 }
 
 function findChatContainer() {
@@ -160,16 +173,27 @@ function waitForImageGeneration(messageCountBeforeSend) {
     };
 
     const isResponseComplete = () => {
-      // Look for the Send button. When generating, the Send button is either disabled, hidden, or absent.
-      // If the Send button exists, is visible, and is NOT disabled (enabled), then generating is done!
+      // Look for the Send button and the Stop button.
       const sendButton = findSendButton();
-      if (sendButton && sendButton.offsetParent !== null && !sendButton.disabled && !sendButton.hasAttribute('disabled')) {
+      const stopButton = findStopButton();
+
+      // If a stop button exists, we are definitely still generating.
+      if (stopButton) {
+        return false;
+      }
+
+      // If the send button exists and is visible, then we are done generating.
+      // Note: the send button is usually disabled when the prompt input field is empty,
+      // so we do not require it to be enabled.
+      if (sendButton && sendButton.offsetParent !== null) {
         return true;
       }
+
       return false; // Wait for state to settle
     };
 
     let generationStarted = false;
+    let completionDetectedTime = null;
 
     checkIntervalId = setInterval(() => {
       dismissComparisonDialog();
@@ -196,11 +220,22 @@ function waitForImageGeneration(messageCountBeforeSend) {
 
       if (!isComplete) return;
 
+      // Start the grace period timer when isComplete first becomes true
+      if (completionDetectedTime === null) {
+        completionDetectedTime = Date.now();
+      }
+
       const imageUrl = checkForNewImage();
       if (imageUrl) {
         cleanup();
         resolve(imageUrl);
         return;
+      }
+
+      // If we've waited less than the grace period (5 seconds), keep waiting for the image to be appended
+      const gracePeriodMs = 5000;
+      if (Date.now() - completionDetectedTime < gracePeriodMs) {
+        return; // Wait for the next tick
       }
 
       // Response is complete, but no DALL-E image was generated.
