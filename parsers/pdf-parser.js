@@ -19,8 +19,7 @@ export async function extractPromptsFromPdf(fileArrayBuffer) {
 }
 
 function splitTextIntoPrompts(rawText) {
-  return rawText
-    .split(/\n+/)
-    .map(line => line.trim())
-    .filter(line => line.length > 0);
+  // Normalize line endings, merge single line breaks, then split on true paragraphs
+  const normalized = rawText.replace(/(?<!\n)\n(?!\n)/g, " "); 
+  return normalized.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
 }

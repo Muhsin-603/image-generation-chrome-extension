@@ -13,33 +13,84 @@ const DELAYS = {
   MAX_RETRIES: 3
 };
 
+// Rehydrate state from chrome.storage.local
+async function rehydrateState() {
+  try {
+    const data = await chrome.storage.local.get([
+      "promptQueue",
+      "currentIndex",
+      "downloadFolder",
+      "isPaused",
+      "isRunning"
+    ]);
+    if (data.promptQueue !== undefined) STATE.promptQueue = data.promptQueue;
+    if (data.currentIndex !== undefined) STATE.currentIndex = data.currentIndex;
+    if (data.downloadFolder !== undefined) STATE.downloadFolder = data.downloadFolder;
+    if (data.isPaused !== undefined) STATE.isPaused = data.isPaused;
+    if (data.isRunning !== undefined) STATE.isRunning = data.isRunning;
+
+    // If the process was active and not paused, attempt auto-resume on startup
+    if (STATE.isRunning && !STATE.isPaused && STATE.promptQueue.length > 0 && STATE.currentIndex < STATE.promptQueue.length) {
+      findChatGptTab().then(tabId => {
+        STATE.chatGptTabId = tabId;
+        processNextPrompt();
+      }).catch(error => {
+        console.error("Failed to auto-resume on wakeup:", error);
+        STATE.isRunning = false;
+        saveState();
+      });
+    }
+  } catch (error) {
+    console.error("Failed to rehydrate state:", error);
+  }
+}
+
+// Save state back to chrome.storage.local
+async function saveState() {
+  try {
+    await chrome.storage.local.set({
+      promptQueue: STATE.promptQueue,
+      currentIndex: STATE.currentIndex,
+      downloadFolder: STATE.downloadFolder,
+      isPaused: STATE.isPaused,
+      isRunning: STATE.isRunning
+    });
+  } catch (error) {
+    console.error("Failed to save state to storage:", error);
+  }
+}
+
+// Kick off initialization
+const initializationPromise = rehydrateState();
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
   .catch(error => console.error("Failed to set panel behavior:", error));
 
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handlers = {
-    START_GENERATION: () => handleStartGeneration(message),
-    PAUSE_GENERATION: () => handlePauseGeneration(),
-    RESUME_GENERATION: () => handleResumeGeneration(),
-    CANCEL_GENERATION: () => handleCancelGeneration(),
-    GET_STATUS: () => handleGetStatus(sendResponse),
-    SCRAPE_CHAT: () => handleScrapeChatRequest(sendResponse),
-    DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse),
-    ADD_PROMPT: () => handleAddPrompt(message.prompt),
-    REMOVE_PROMPT: () => handleRemovePrompt(message.index)
-  };
+  initializationPromise.then(() => {
+    const handlers = {
+      START_GENERATION: () => handleStartGeneration(message),
+      PAUSE_GENERATION: () => handlePauseGeneration(),
+      RESUME_GENERATION: () => handleResumeGeneration(),
+      CANCEL_GENERATION: () => handleCancelGeneration(),
+      GET_STATUS: () => handleGetStatus(sendResponse),
+      SCRAPE_CHAT: () => handleScrapeChatRequest(sendResponse),
+      DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse),
+      ADD_PROMPT: () => handleAddPrompt(message.prompt),
+      REMOVE_PROMPT: () => handleRemovePrompt(message.index)
+    };
 
-  const handler = handlers[message.type];
-  if (handler) {
-    handler();
-    const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED"];
-    if (!exclusions.includes(message.type)) {
-      sendResponse({ received: true });
+    const handler = handlers[message.type];
+    if (handler) {
+      handler();
+      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED"];
+      if (!exclusions.includes(message.type)) {
+        sendResponse({ received: true });
+      }
     }
-    return true;
-  }
+  });
+  return true;
 });
 
 
@@ -50,6 +101,8 @@ function handleStartGeneration(message) {
   STATE.isPaused = false;
   STATE.isRunning = true;
 
+  saveState();
+
   findChatGptTab().then(tabId => {
     STATE.chatGptTabId = tabId;
     processNextPrompt();
@@ -59,16 +112,19 @@ function handleStartGeneration(message) {
       message: "Please open chatgpt.com in a tab first: " + error.message
     });
     STATE.isRunning = false;
+    saveState();
   });
 }
 
 function handlePauseGeneration() {
   STATE.isPaused = true;
+  saveState();
   broadcastProgress({ status: "paused", currentIndex: STATE.currentIndex });
 }
 
 function handleResumeGeneration() {
   STATE.isPaused = false;
+  saveState();
   broadcastProgress({ status: "resumed", currentIndex: STATE.currentIndex });
   processNextPrompt();
 }
@@ -77,6 +133,7 @@ function handleCancelGeneration() {
   STATE.isRunning = false;
   STATE.isPaused = false;
   STATE.currentIndex = 0;
+  saveState();
 
   if (STATE.chatGptTabId) {
     chrome.tabs.sendMessage(STATE.chatGptTabId, { type: "CANCEL" }).catch(() => {});
@@ -125,6 +182,7 @@ async function processNextPrompt() {
 
   if (STATE.currentIndex >= STATE.promptQueue.length) {
     STATE.isRunning = false;
+    await saveState();
     broadcastProgress({
       status: "completed",
       message: "All prompts processed successfully",
@@ -168,6 +226,7 @@ async function processNextPrompt() {
     }
 
     STATE.currentIndex++;
+    await saveState();
     await delay(DELAYS.BETWEEN_PROMPTS);
     processNextPrompt();
 
@@ -179,6 +238,7 @@ async function processNextPrompt() {
     });
 
     STATE.currentIndex++;
+    await saveState();
     await delay(DELAYS.BETWEEN_PROMPTS);
     processNextPrompt();
   }
@@ -227,14 +287,8 @@ async function downloadGeneratedImage(imageUrl, promptIndex, promptText, customF
 }
 
 function sanitizeFileName(text) {
-  const truncatedText = text.substring(0, 50);
-
-  return truncatedText
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "");
+  // Removes only characters strictly forbidden by Windows/Unix file systems
+  return text.substring(0, 50).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
 }
 
 
@@ -283,7 +337,12 @@ async function handleDownloadScraped(message, sendResponse) {
     });
 
     try {
-      const dataUrl = await fetchScrapedDataUrl(tabId, item.imageUrl);
+      let dataUrl;
+      if (item.imageUrl.startsWith("data:")) {
+        dataUrl = item.imageUrl;
+      } else {
+        dataUrl = await fetchScrapedDataUrl(tabId, item.imageUrl);
+      }
       await downloadGeneratedImage(dataUrl, i, item.promptText, folder);
 
       broadcastProgress({
@@ -328,10 +387,12 @@ function fetchScrapedDataUrl(tabId, imageUrl) {
 
 function handleAddPrompt(prompt) {
   STATE.promptQueue.push(prompt);
+  saveState();
 }
 
 function handleRemovePrompt(index) {
   if (index > STATE.currentIndex) {
     STATE.promptQueue.splice(index, 1);
+    saveState();
   }
 }

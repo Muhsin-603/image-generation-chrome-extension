@@ -46,23 +46,49 @@ function typePromptText(promptText) {
   }
 
   inputElement.focus();
-  inputElement.textContent = "";
-
-  const paragraph = document.createElement("p");
-  paragraph.textContent = promptText;
-  inputElement.appendChild(paragraph);
-
-  inputElement.dispatchEvent(new Event("input", { bubbles: true }));
-  inputElement.dispatchEvent(new Event("change", { bubbles: true }));
+  
+  // Clear existing text securely
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  
+  // Simulate a realistic paste event
+  const pasteEvent = new ClipboardEvent('paste', {
+    bubbles: true,
+    cancelable: true,
+    clipboardData: new DataTransfer()
+  });
+  pasteEvent.clipboardData.setData('text/plain', promptText);
+  inputElement.dispatchEvent(pasteEvent);
 }
 
-function clickSendButton() {
-  const sendButton = findSendButton();
-  if (!sendButton) {
-    throw new Error("Could not find ChatGPT send button");
-  }
+function clickSendButtonWhenEnabled() {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    const timeoutMs = 5000;
 
-  sendButton.click();
+    function check() {
+      const sendButton = findSendButton();
+      if (sendButton && !sendButton.disabled && !sendButton.hasAttribute("disabled")) {
+        sendButton.click();
+        resolve();
+        return;
+      }
+
+      if (Date.now() - startTime > timeoutMs) {
+        if (sendButton) {
+          sendButton.click();
+          resolve();
+        } else {
+          reject(new Error("Send button did not become enabled in time"));
+        }
+        return;
+      }
+
+      requestAnimationFrame(check);
+    }
+
+    requestAnimationFrame(check);
+  });
 }
 
 
@@ -188,14 +214,14 @@ function waitForImageGeneration(messageCountBeforeSend) {
 
 function isGeneratedImageUrl(url) {
   if (!url) return false;
-  if (url.startsWith("data:")) return false;
+  if (url.startsWith("data:image/")) return true;
+  if (url.startsWith("blob:")) return true;
 
   const imagePatterns = [
     "oaidalleapiprodscus",
     "dall-e",
     "openai",
     "oaiusercontent",
-    "blob:",
     ".png",
     ".jpg",
     ".jpeg",
@@ -278,8 +304,7 @@ async function processPrompt(promptText) {
   const messageCountBeforeSend = countAssistantMessages();
 
   typePromptText(promptText);
-  await delay(TIMEOUTS.POST_SEND_DELAY);
-  clickSendButton();
+  await clickSendButtonWhenEnabled();
 
   const imageUrl = await waitForImageGeneration(messageCountBeforeSend);
   return imageUrl;
@@ -403,9 +428,19 @@ function scrapeChatImages() {
   return uniqueResults;
 }
 
-function handleScrapeChat(sendResponse) {
+async function handleScrapeChat(sendResponse) {
   try {
     const items = scrapeChatImages();
+    // Resolve all blob URLs to data URLs immediately to avoid sending raw blob URLs
+    for (const item of items) {
+      if (item.imageUrl.startsWith("blob:")) {
+        try {
+          item.imageUrl = await fetchAsDataUrl(item.imageUrl);
+        } catch (err) {
+          console.error("Failed to resolve blob URL during scrape:", err);
+        }
+      }
+    }
     sendResponse({ success: true, items: items });
   } catch (error) {
     sendResponse({ success: false, error: error.message });
