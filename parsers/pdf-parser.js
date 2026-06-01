@@ -1,9 +1,15 @@
-import * as pdfjsLib from "../lib/pdf.min.mjs";
+let pdfjsLib = null;
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdf.worker.min.mjs");
+async function loadPdfjs() {
+  if (pdfjsLib) return pdfjsLib;
+  pdfjsLib = await import("../lib/pdf.min.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdf.worker.min.mjs");
+  return pdfjsLib;
+}
 
 export async function extractPromptsFromPdf(fileArrayBuffer) {
-  const pdfDocument = await pdfjsLib.getDocument({ data: fileArrayBuffer }).promise;
+  const lib = await loadPdfjs();
+  const pdfDocument = await lib.getDocument({ data: fileArrayBuffer }).promise;
   const totalPages = pdfDocument.numPages;
   const allTextLines = [];
 
