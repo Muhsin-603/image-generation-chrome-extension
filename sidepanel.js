@@ -62,6 +62,47 @@ function initializeEventListeners() {
   elements.dropZone.addEventListener("drop", handleDrop);
 
   chrome.runtime.onMessage.addListener(handleProgressUpdate);
+
+  syncStateWithBackground();
+}
+
+function syncStateWithBackground() {
+  chrome.runtime.sendMessage({ type: "GET_STATUS" }, response => {
+    if (chrome.runtime.lastError) {
+      console.warn("Failed to get background status on panel load:", chrome.runtime.lastError.message);
+      return;
+    }
+    if (response) {
+      if (response.promptQueue && response.promptQueue.length > 0) {
+        parsedPrompts = response.promptQueue;
+        renderPromptsList(parsedPrompts);
+      }
+      if (response.isRunning) {
+        switchToRunningState();
+        elements.progressSection.hidden = false;
+        elements.logSection.hidden = false;
+        currentActiveIndex = response.currentIndex;
+        highlightActivePrompt(currentActiveIndex);
+        isPaused = response.isPaused;
+        
+        if (isPaused) {
+          elements.pauseButton.innerHTML = createResumeIcon() + " Resume";
+          elements.progressLabel.textContent = "Paused";
+          elements.progressLabel.classList.add("status-pulse");
+        } else {
+          elements.pauseButton.innerHTML = createPauseIcon() + " Pause";
+          elements.progressLabel.classList.remove("status-pulse");
+        }
+        
+        const activePromptText = parsedPrompts[currentActiveIndex] || "";
+        elements.currentPromptText.textContent = activePromptText;
+        
+        const progressMessage = isPaused ? "Paused" : `Processing prompt ${currentActiveIndex + 1} of ${parsedPrompts.length}`;
+        updateProgress(currentActiveIndex, parsedPrompts.length, progressMessage);
+        addLogEntry("Reconnected to active generation session.", "success");
+      }
+    }
+  });
 }
 
 

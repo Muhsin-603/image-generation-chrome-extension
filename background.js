@@ -7,6 +7,8 @@ const STATE = {
   chatGptTabId: null
 };
 
+let currentRunId = 0;
+
 const DELAYS = {
   BETWEEN_PROMPTS: 5000,
   RETRY_INTERVAL: 3000,
@@ -33,7 +35,8 @@ async function rehydrateState() {
     if (STATE.isRunning && !STATE.isPaused && STATE.promptQueue.length > 0 && STATE.currentIndex < STATE.promptQueue.length) {
       findChatGptTab().then(tabId => {
         STATE.chatGptTabId = tabId;
-        processNextPrompt();
+        currentRunId = Date.now();
+        processNextPrompt(currentRunId);
       }).catch(error => {
         console.error("Failed to auto-resume on wakeup:", error);
         STATE.isRunning = false;
@@ -103,9 +106,10 @@ function handleStartGeneration(message) {
 
   saveState();
 
+  currentRunId = Date.now();
   findChatGptTab().then(tabId => {
     STATE.chatGptTabId = tabId;
-    processNextPrompt();
+    processNextPrompt(currentRunId);
   }).catch(error => {
     broadcastProgress({
       status: "error",
@@ -118,6 +122,7 @@ function handleStartGeneration(message) {
 
 function handlePauseGeneration() {
   STATE.isPaused = true;
+  currentRunId = Date.now(); // Cancel any running loop
   saveState();
   broadcastProgress({ status: "paused", currentIndex: STATE.currentIndex });
 }
@@ -126,13 +131,15 @@ function handleResumeGeneration() {
   STATE.isPaused = false;
   saveState();
   broadcastProgress({ status: "resumed", currentIndex: STATE.currentIndex });
-  processNextPrompt();
+  currentRunId = Date.now();
+  processNextPrompt(currentRunId);
 }
 
 function handleCancelGeneration() {
   STATE.isRunning = false;
   STATE.isPaused = false;
   STATE.currentIndex = 0;
+  currentRunId = Date.now(); // Cancel any running loop
   saveState();
 
   if (STATE.chatGptTabId) {
@@ -147,7 +154,8 @@ function handleGetStatus(sendResponse) {
     isRunning: STATE.isRunning,
     isPaused: STATE.isPaused,
     currentIndex: STATE.currentIndex,
-    totalPrompts: STATE.promptQueue.length
+    totalPrompts: STATE.promptQueue.length,
+    promptQueue: STATE.promptQueue
   });
 }
 
@@ -177,7 +185,12 @@ async function ensureContentScriptReady(tabId) {
 }
 
 
-async function processNextPrompt() {
+async function processNextPrompt(capturedRunId) {
+  if (capturedRunId !== currentRunId) {
+    console.log("processNextPrompt: Run ID mismatch, terminating old loop.");
+    return;
+  }
+
   if (!STATE.isRunning || STATE.isPaused) return;
 
   if (STATE.currentIndex >= STATE.promptQueue.length) {
@@ -205,11 +218,14 @@ async function processNextPrompt() {
 
   try {
     await ensureContentScriptReady(STATE.chatGptTabId);
+    if (capturedRunId !== currentRunId) return;
 
     const result = await sendPromptToContentScript(currentPrompt);
+    if (capturedRunId !== currentRunId) return;
 
     if (result.success && result.dataUrl) {
       await downloadGeneratedImage(result.dataUrl, STATE.currentIndex, currentPrompt);
+      if (capturedRunId !== currentRunId) return;
 
       broadcastProgress({
         status: "downloaded",
@@ -228,9 +244,13 @@ async function processNextPrompt() {
     STATE.currentIndex++;
     await saveState();
     await delay(DELAYS.BETWEEN_PROMPTS);
-    processNextPrompt();
+    if (capturedRunId !== currentRunId) return;
+
+    processNextPrompt(capturedRunId);
 
   } catch (error) {
+    if (capturedRunId !== currentRunId) return;
+
     broadcastProgress({
       status: "error",
       currentIndex: STATE.currentIndex,
@@ -240,7 +260,9 @@ async function processNextPrompt() {
     STATE.currentIndex++;
     await saveState();
     await delay(DELAYS.BETWEEN_PROMPTS);
-    processNextPrompt();
+    if (capturedRunId !== currentRunId) return;
+
+    processNextPrompt(capturedRunId);
   }
 }
 

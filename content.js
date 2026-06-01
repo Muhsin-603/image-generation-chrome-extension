@@ -51,14 +51,15 @@ function typePromptText(promptText) {
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
   
-  // Simulate a realistic paste event
-  const pasteEvent = new ClipboardEvent('paste', {
+  // Use native execution command to insert the text, bypassing clipboard sandbox policies
+  document.execCommand('insertText', false, promptText);
+  
+  // Dispatch input event to trigger React/Lexical listeners
+  const inputEvent = new Event('input', {
     bubbles: true,
-    cancelable: true,
-    clipboardData: new DataTransfer()
+    cancelable: true
   });
-  pasteEvent.clipboardData.setData('text/plain', promptText);
-  inputElement.dispatchEvent(pasteEvent);
+  inputElement.dispatchEvent(inputEvent);
 }
 
 function clickSendButtonWhenEnabled() {
@@ -159,9 +160,6 @@ function waitForImageGeneration(messageCountBeforeSend) {
     };
 
     const isResponseComplete = () => {
-      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
-      if (assistantMessages.length <= messageCountBeforeSend) return false;
-
       // 1. Look for any active stop button in the DOM
       const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
                          document.querySelector('button[aria-label*="Stop"]') ||
@@ -175,17 +173,40 @@ function waitForImageGeneration(messageCountBeforeSend) {
         return false; // Stop button is visible, still generating
       }
 
-      // 2. Look for the Send button. If the Send button is back and visible, generating is done!
+      // 2. Look for the Send button. If the Send button is back, visible, and NOT disabled, generating is done!
       const sendButton = findSendButton();
-      if (sendButton && sendButton.offsetParent !== null) {
+      if (sendButton && sendButton.offsetParent !== null && !sendButton.disabled && !sendButton.hasAttribute('disabled')) {
         return true;
       }
 
       return false; // Wait for state to settle
     };
 
+    let generationStarted = false;
+
     checkIntervalId = setInterval(() => {
       dismissComparisonDialog();
+
+      if (!generationStarted) {
+        const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+        const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
+                           document.querySelector('button[aria-label*="Stop"]') ||
+                           document.querySelector('button[aria-label*="Cancel"]') ||
+                           Array.from(document.querySelectorAll('button')).find(btn => {
+                             const svg = btn.querySelector('svg');
+                             return svg && (svg.querySelector('rect') || btn.innerHTML.includes('rect'));
+                           });
+        const sendButton = findSendButton();
+        
+        // Generation has started if the message count increased AND (stop button is visible OR send button is disabled/absent)
+        const isGenerating = (stopButton && stopButton.offsetParent !== null) || 
+                             (!sendButton || sendButton.disabled || sendButton.hasAttribute('disabled'));
+
+        if (assistantMessages.length > messageCountBeforeSend && isGenerating) {
+          generationStarted = true;
+        }
+        return; // Wait for the next poll to check completion
+      }
 
       if (!isResponseComplete()) return;
 
@@ -446,19 +467,9 @@ function scrapeChatImages() {
   return uniqueResults;
 }
 
-async function handleScrapeChat(sendResponse) {
+function handleScrapeChat(sendResponse) {
   try {
     const items = scrapeChatImages();
-    // Resolve all blob URLs to data URLs immediately to avoid sending raw blob URLs
-    for (const item of items) {
-      if (item.imageUrl.startsWith("blob:")) {
-        try {
-          item.imageUrl = await fetchAsDataUrl(item.imageUrl);
-        } catch (err) {
-          console.error("Failed to resolve blob URL during scrape:", err);
-        }
-      }
-    }
     sendResponse({ success: true, items: items });
   } catch (error) {
     sendResponse({ success: false, error: error.message });
