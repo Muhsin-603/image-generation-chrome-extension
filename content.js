@@ -160,25 +160,12 @@ function waitForImageGeneration(messageCountBeforeSend) {
     };
 
     const isResponseComplete = () => {
-      // 1. Look for any active stop button in the DOM
-      const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
-                         document.querySelector('button[aria-label*="Stop"]') ||
-                         document.querySelector('button[aria-label*="Cancel"]') ||
-                         Array.from(document.querySelectorAll('button')).find(btn => {
-                           const svg = btn.querySelector('svg');
-                           return svg && (svg.querySelector('rect') || btn.innerHTML.includes('rect'));
-                         });
-
-      if (stopButton && stopButton.offsetParent !== null) {
-        return false; // Stop button is visible, still generating
-      }
-
-      // 2. Look for the Send button. If the Send button is back, visible, and NOT disabled, generating is done!
+      // Look for the Send button. When generating, the Send button is either disabled, hidden, or absent.
+      // If the Send button exists, is visible, and is NOT disabled (enabled), then generating is done!
       const sendButton = findSendButton();
       if (sendButton && sendButton.offsetParent !== null && !sendButton.disabled && !sendButton.hasAttribute('disabled')) {
         return true;
       }
-
       return false; // Wait for state to settle
     };
 
@@ -187,20 +174,19 @@ function waitForImageGeneration(messageCountBeforeSend) {
     checkIntervalId = setInterval(() => {
       dismissComparisonDialog();
 
+      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+      const isComplete = isResponseComplete();
+
+      // If the response completed before we detected the start (e.g. instant policy violation)
+      if (assistantMessages.length > messageCountBeforeSend && isComplete) {
+        generationStarted = true;
+      }
+
       if (!generationStarted) {
-        const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
-        const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
-                           document.querySelector('button[aria-label*="Stop"]') ||
-                           document.querySelector('button[aria-label*="Cancel"]') ||
-                           Array.from(document.querySelectorAll('button')).find(btn => {
-                             const svg = btn.querySelector('svg');
-                             return svg && (svg.querySelector('rect') || btn.innerHTML.includes('rect'));
-                           });
         const sendButton = findSendButton();
         
-        // Generation has started if the message count increased AND (stop button is visible OR send button is disabled/absent)
-        const isGenerating = (stopButton && stopButton.offsetParent !== null) || 
-                             (!sendButton || sendButton.disabled || sendButton.hasAttribute('disabled'));
+        // Generation has started if the message count increased AND (send button is disabled, hidden, or absent)
+        const isGenerating = !sendButton || sendButton.offsetParent === null || sendButton.disabled || sendButton.hasAttribute('disabled');
 
         if (assistantMessages.length > messageCountBeforeSend && isGenerating) {
           generationStarted = true;
@@ -208,7 +194,7 @@ function waitForImageGeneration(messageCountBeforeSend) {
         return; // Wait for the next poll to check completion
       }
 
-      if (!isResponseComplete()) return;
+      if (!isComplete) return;
 
       const imageUrl = checkForNewImage();
       if (imageUrl) {
@@ -220,7 +206,6 @@ function waitForImageGeneration(messageCountBeforeSend) {
       // Response is complete, but no DALL-E image was generated.
       cleanup();
       
-      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
       let errorMsg = "Response completed but no image was found.";
       if (assistantMessages.length > messageCountBeforeSend) {
         const latestMessage = assistantMessages[assistantMessages.length - 1];
@@ -346,8 +331,8 @@ async function processPrompt(promptText) {
 
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "PROCESS_PROMPT") {
-    handleProcessPrompt(message.promptText, sendResponse);
+  if (message.type === "START_PROMPT") {
+    handleStartPrompt(message, sendResponse);
     return true;
   }
 
@@ -372,6 +357,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleFetchDataUrl(message.url, sendResponse);
     return true;
   }
+
+  if (message.type === "DOWNLOAD_SCRAPED_IMAGES") {
+    handleDownloadScrapedImages(message.items, message.downloadFolder, sendResponse);
+    return true;
+  }
 });
 
 async function fetchAsDataUrl(url) {
@@ -385,22 +375,44 @@ async function fetchAsDataUrl(url) {
   });
 }
 
-async function handleProcessPrompt(promptText, sendResponse) {
-  try {
-    isProcessing = true;
-    const imageUrl = await processPrompt(promptText);
-    
-    let dataUrl = imageUrl;
-    if (imageUrl && imageUrl.startsWith("blob:")) {
-      dataUrl = await fetchAsDataUrl(imageUrl);
-    }
-    
-    sendResponse({ success: true, dataUrl: dataUrl });
-  } catch (error) {
-    sendResponse({ success: false, error: error.message });
-  } finally {
-    isProcessing = false;
-  }
+function handleStartPrompt(message, sendResponse) {
+  sendResponse({ success: true, status: "started" });
+
+  isProcessing = true;
+  processPrompt(message.promptText)
+    .then(async (imageUrl) => {
+      if (!isProcessing) return;
+
+      let dataUrl = imageUrl;
+      if (imageUrl && imageUrl.startsWith("blob:")) {
+        try {
+          dataUrl = await fetchAsDataUrl(imageUrl);
+        } catch (err) {
+          console.error("Failed to resolve blob URL in content script:", err);
+        }
+      }
+
+      chrome.runtime.sendMessage({
+        type: "PROMPT_COMPLETED",
+        runId: message.runId,
+        index: message.index,
+        success: true,
+        dataUrl: dataUrl
+      });
+    })
+    .catch((error) => {
+      if (!isProcessing) return;
+      chrome.runtime.sendMessage({
+        type: "PROMPT_COMPLETED",
+        runId: message.runId,
+        index: message.index,
+        success: false,
+        error: error.message
+      });
+    })
+    .finally(() => {
+      isProcessing = false;
+    });
 }
 
 function scrapeChatImages() {
@@ -483,4 +495,114 @@ async function handleFetchDataUrl(url, sendResponse) {
   } catch (error) {
     sendResponse({ success: false, error: error.message });
   }
+}
+
+async function handleDownloadScrapedImages(items, downloadFolder, sendResponse) {
+  sendResponse({ success: true, message: "Started downloading on page" });
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const promptNumber = i + 1;
+    const totalPrompts = items.length;
+
+    chrome.runtime.sendMessage({
+      status: "processing",
+      currentIndex: i,
+      totalPrompts: totalPrompts,
+      currentPrompt: item.promptText,
+      message: `Downloading scraped image ${promptNumber} of ${totalPrompts}`
+    });
+
+    try {
+      const sanitizedName = sanitizeFileName(item.promptText);
+      const paddedIndex = String(i + 1).padStart(3, "0");
+      const fileName = `${downloadFolder}/${paddedIndex}_${sanitizedName}.png`;
+
+      let finalUrl = item.imageUrl;
+      let createdBlobUrl = null;
+
+      // If it is a cross-origin HTTPS URL, try to fetch it first to convert it to a local blob URL
+      // so that the download attribute on the <a> tag is respected!
+      if (finalUrl.startsWith("http") && !finalUrl.includes(window.location.host)) {
+        try {
+          const res = await fetch(finalUrl);
+          const blob = await res.blob();
+          finalUrl = URL.createObjectURL(blob);
+          createdBlobUrl = finalUrl;
+        } catch (fetchErr) {
+          console.warn("Failed to fetch cross-origin image in page context, falling back:", fetchErr);
+        }
+      }
+
+      let downloadedSuccessfully = false;
+
+      // If we got a blob (either local or resolved), trigger download programmatically
+      if (finalUrl.startsWith("blob:") || finalUrl.startsWith("data:")) {
+        try {
+          const a = document.createElement("a");
+          a.href = finalUrl;
+          a.download = fileName;
+          a.style.display = "none";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          downloadedSuccessfully = true;
+        } catch (downloadErr) {
+          console.warn("Programmatic download failed:", downloadErr);
+        }
+      }
+
+      // If not downloaded successfully (e.g. cross-origin fetch failed or failed download), delegate to background
+      if (!downloadedSuccessfully) {
+        await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({
+            type: "DOWNLOAD_VIA_BACKGROUND",
+            imageUrl: item.imageUrl,
+            index: i,
+            promptText: item.promptText,
+            downloadFolder: downloadFolder
+          }, response => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (response && response.success) {
+              resolve();
+            } else {
+              reject(new Error(response ? response.error : "Unknown background download error"));
+            }
+          });
+        });
+      }
+
+      // Clean up object URL if created
+      if (createdBlobUrl) {
+        URL.revokeObjectURL(createdBlobUrl);
+      }
+
+      chrome.runtime.sendMessage({
+        status: "downloaded",
+        currentIndex: i,
+        totalPrompts: totalPrompts,
+        message: `Downloaded scraped image ${promptNumber} of ${totalPrompts}`
+      });
+
+    } catch (error) {
+      chrome.runtime.sendMessage({
+        status: "error",
+        currentIndex: i,
+        message: `Failed to download image ${promptNumber}: ${error.message}`
+      });
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000)); // Delay between downloads to prevent flooding the browser
+  }
+
+  chrome.runtime.sendMessage({
+    status: "completed",
+    message: "Finished downloading all scraped images",
+    totalProcessed: items.length
+  });
+}
+
+function sanitizeFileName(text) {
+  return text.substring(0, 50).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
 }

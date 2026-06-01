@@ -4,10 +4,9 @@ const STATE = {
   downloadFolder: "generated-images",
   isPaused: false,
   isRunning: false,
-  chatGptTabId: null
+  chatGptTabId: null,
+  runId: 0
 };
-
-let currentRunId = 0;
 
 const DELAYS = {
   BETWEEN_PROMPTS: 5000,
@@ -23,20 +22,21 @@ async function rehydrateState() {
       "currentIndex",
       "downloadFolder",
       "isPaused",
-      "isRunning"
+      "isRunning",
+      "runId"
     ]);
     if (data.promptQueue !== undefined) STATE.promptQueue = data.promptQueue;
     if (data.currentIndex !== undefined) STATE.currentIndex = data.currentIndex;
     if (data.downloadFolder !== undefined) STATE.downloadFolder = data.downloadFolder;
     if (data.isPaused !== undefined) STATE.isPaused = data.isPaused;
     if (data.isRunning !== undefined) STATE.isRunning = data.isRunning;
+    if (data.runId !== undefined) STATE.runId = data.runId;
 
     // If the process was active and not paused, attempt auto-resume on startup
     if (STATE.isRunning && !STATE.isPaused && STATE.promptQueue.length > 0 && STATE.currentIndex < STATE.promptQueue.length) {
       findChatGptTab().then(tabId => {
         STATE.chatGptTabId = tabId;
-        currentRunId = Date.now();
-        processNextPrompt(currentRunId);
+        processNextPrompt(STATE.runId);
       }).catch(error => {
         console.error("Failed to auto-resume on wakeup:", error);
         STATE.isRunning = false;
@@ -56,7 +56,8 @@ async function saveState() {
       currentIndex: STATE.currentIndex,
       downloadFolder: STATE.downloadFolder,
       isPaused: STATE.isPaused,
-      isRunning: STATE.isRunning
+      isRunning: STATE.isRunning,
+      runId: STATE.runId
     });
   } catch (error) {
     console.error("Failed to save state to storage:", error);
@@ -81,13 +82,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       SCRAPE_CHAT: () => handleScrapeChatRequest(sendResponse),
       DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse),
       ADD_PROMPT: () => handleAddPrompt(message.prompt),
-      REMOVE_PROMPT: () => sendResponse({ success: handleRemovePrompt(message.index) })
+      REMOVE_PROMPT: () => sendResponse({ success: handleRemovePrompt(message.index) }),
+      PROMPT_COMPLETED: () => handlePromptCompleted(message, sendResponse),
+      DOWNLOAD_VIA_BACKGROUND: () => handleDownloadViaBackground(message, sendResponse)
     };
 
     const handler = handlers[message.type];
     if (handler) {
       handler();
-      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED", "REMOVE_PROMPT"];
+      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED", "REMOVE_PROMPT", "PROMPT_COMPLETED", "DOWNLOAD_VIA_BACKGROUND"];
       if (!exclusions.includes(message.type)) {
         sendResponse({ received: true });
       }
@@ -103,13 +106,13 @@ function handleStartGeneration(message) {
   STATE.currentIndex = 0;
   STATE.isPaused = false;
   STATE.isRunning = true;
+  STATE.runId = Date.now();
 
   saveState();
 
-  currentRunId = Date.now();
   findChatGptTab().then(tabId => {
     STATE.chatGptTabId = tabId;
-    processNextPrompt(currentRunId);
+    processNextPrompt(STATE.runId);
   }).catch(error => {
     broadcastProgress({
       status: "error",
@@ -122,24 +125,24 @@ function handleStartGeneration(message) {
 
 function handlePauseGeneration() {
   STATE.isPaused = true;
-  currentRunId = Date.now(); // Cancel any running loop
+  STATE.runId = Date.now(); // Cancel any running loop
   saveState();
   broadcastProgress({ status: "paused", currentIndex: STATE.currentIndex });
 }
 
 function handleResumeGeneration() {
   STATE.isPaused = false;
+  STATE.runId = Date.now();
   saveState();
   broadcastProgress({ status: "resumed", currentIndex: STATE.currentIndex });
-  currentRunId = Date.now();
-  processNextPrompt(currentRunId);
+  processNextPrompt(STATE.runId);
 }
 
 function handleCancelGeneration() {
   STATE.isRunning = false;
   STATE.isPaused = false;
   STATE.currentIndex = 0;
-  currentRunId = Date.now(); // Cancel any running loop
+  STATE.runId = Date.now(); // Cancel any running loop
   saveState();
 
   if (STATE.chatGptTabId) {
@@ -186,7 +189,7 @@ async function ensureContentScriptReady(tabId) {
 
 
 async function processNextPrompt(capturedRunId) {
-  if (capturedRunId !== currentRunId) {
+  if (capturedRunId !== STATE.runId) {
     console.log("processNextPrompt: Run ID mismatch, terminating old loop.");
     return;
   }
@@ -218,14 +221,88 @@ async function processNextPrompt(capturedRunId) {
 
   try {
     await ensureContentScriptReady(STATE.chatGptTabId);
-    if (capturedRunId !== currentRunId) return;
+    if (capturedRunId !== STATE.runId) return;
 
-    const result = await sendPromptToContentScript(currentPrompt);
-    if (capturedRunId !== currentRunId) return;
+    const ack = await sendStartPromptToContentScript(currentPrompt, STATE.currentIndex, capturedRunId);
+    if (!ack || !ack.success) {
+      throw new Error(ack ? ack.error : "Failed to start prompt processing in content script");
+    }
 
-    if (result.success && result.dataUrl) {
-      await downloadGeneratedImage(result.dataUrl, STATE.currentIndex, currentPrompt);
-      if (capturedRunId !== currentRunId) return;
+    console.log(`Prompt ${promptNumber} started successfully. Background worker going to sleep.`);
+
+  } catch (error) {
+    if (capturedRunId !== STATE.runId) return;
+
+    broadcastProgress({
+      status: "error",
+      currentIndex: STATE.currentIndex,
+      message: `Error on prompt ${promptNumber}: ${error.message}`
+    });
+
+    STATE.currentIndex++;
+    await saveState();
+    await delay(DELAYS.BETWEEN_PROMPTS);
+    if (capturedRunId !== STATE.runId) return;
+
+    processNextPrompt(capturedRunId);
+  }
+}
+
+function sendStartPromptToContentScript(promptText, index, runId) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(
+      STATE.chatGptTabId,
+      {
+        type: "START_PROMPT",
+        promptText: promptText,
+        index: index,
+        runId: runId
+      },
+      response => {
+        if (chrome.runtime.lastError) {
+          resolve({ success: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(response || { success: true });
+        }
+      }
+    );
+  });
+}
+
+async function handlePromptCompleted(message, sendResponse) {
+  sendResponse({ received: true });
+
+  if (message.runId !== STATE.runId) {
+    console.log(`handlePromptCompleted: Run ID mismatch (${message.runId} vs ${STATE.runId}). Ignoring.`);
+    return;
+  }
+  if (message.index !== STATE.currentIndex) {
+    console.log(`handlePromptCompleted: Index mismatch (${message.index} vs ${STATE.currentIndex}). Ignoring.`);
+    return;
+  }
+  if (!STATE.isRunning || STATE.isPaused) {
+    console.log("handlePromptCompleted: Generation is not running or is paused. Ignoring.");
+    return;
+  }
+
+  const promptNumber = STATE.currentIndex + 1;
+  const totalPrompts = STATE.promptQueue.length;
+  const currentPrompt = STATE.promptQueue[STATE.currentIndex];
+
+  try {
+    if (message.success && message.dataUrl) {
+      let finalDataUrl = message.dataUrl;
+
+      if (finalDataUrl.startsWith("blob:")) {
+        try {
+          finalDataUrl = await fetchScrapedDataUrl(STATE.chatGptTabId, finalDataUrl);
+        } catch (err) {
+          console.error("Failed to resolve blob URL:", err);
+          throw new Error("Failed to resolve blob URL: " + err.message);
+        }
+      }
+
+      await downloadGeneratedImage(finalDataUrl, STATE.currentIndex, currentPrompt);
 
       broadcastProgress({
         status: "downloaded",
@@ -237,19 +314,19 @@ async function processNextPrompt(capturedRunId) {
       broadcastProgress({
         status: "warning",
         currentIndex: STATE.currentIndex,
-        message: `Prompt ${promptNumber}: ${result.error || "No image generated"}`
+        message: `Prompt ${promptNumber}: ${message.error || "No image generated"}`
       });
     }
 
     STATE.currentIndex++;
     await saveState();
     await delay(DELAYS.BETWEEN_PROMPTS);
-    if (capturedRunId !== currentRunId) return;
+    if (message.runId !== STATE.runId) return;
 
-    processNextPrompt(capturedRunId);
+    processNextPrompt(STATE.runId);
 
   } catch (error) {
-    if (capturedRunId !== currentRunId) return;
+    if (message.runId !== STATE.runId) return;
 
     broadcastProgress({
       status: "error",
@@ -260,26 +337,10 @@ async function processNextPrompt(capturedRunId) {
     STATE.currentIndex++;
     await saveState();
     await delay(DELAYS.BETWEEN_PROMPTS);
-    if (capturedRunId !== currentRunId) return;
+    if (message.runId !== STATE.runId) return;
 
-    processNextPrompt(capturedRunId);
+    processNextPrompt(STATE.runId);
   }
-}
-
-function sendPromptToContentScript(promptText) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(
-      STATE.chatGptTabId,
-      { type: "PROCESS_PROMPT", promptText: promptText },
-      response => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        resolve(response || { success: false, error: "No response from content script" });
-      }
-    );
-  });
 }
 
 
@@ -341,54 +402,31 @@ async function handleScrapeChatRequest(sendResponse) {
 async function handleDownloadScraped(message, sendResponse) {
   sendResponse({ success: true, message: "Download started" });
 
-  const items = message.items;
-  const folder = message.downloadFolder || "generated-images";
-  const tabId = await findChatGptTab();
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const promptNumber = i + 1;
-    const totalPrompts = items.length;
-
-    broadcastProgress({
-      status: "processing",
-      currentIndex: i,
-      totalPrompts: totalPrompts,
-      currentPrompt: item.promptText,
-      message: `Downloading scraped image ${promptNumber} of ${totalPrompts}`
+  try {
+    const tabId = await findChatGptTab();
+    await ensureContentScriptReady(tabId);
+    chrome.tabs.sendMessage(tabId, {
+      type: "DOWNLOAD_SCRAPED_IMAGES",
+      items: message.items,
+      downloadFolder: message.downloadFolder || "generated-images"
     });
-
-    try {
-      let dataUrl;
-      if (item.imageUrl.startsWith("data:") || item.imageUrl.startsWith("http:") || item.imageUrl.startsWith("https:")) {
-        dataUrl = item.imageUrl;
-      } else {
-        dataUrl = await fetchScrapedDataUrl(tabId, item.imageUrl);
-      }
-      await downloadGeneratedImage(dataUrl, i, item.promptText, folder);
-
-      broadcastProgress({
-        status: "downloaded",
-        currentIndex: i,
-        totalPrompts: totalPrompts,
-        message: `Downloaded scraped image ${promptNumber} of ${totalPrompts}`
-      });
-    } catch (error) {
-      broadcastProgress({
-        status: "error",
-        currentIndex: i,
-        message: `Failed to download image ${promptNumber}: ${error.message}`
-      });
-    }
-
-    await delay(1000);
+  } catch (error) {
+    console.error("Failed to start download in page:", error);
+    broadcastProgress({
+      status: "error",
+      currentIndex: 0,
+      message: "Failed to download: " + error.message
+    });
   }
+}
 
-  broadcastProgress({
-    status: "completed",
-    message: "Finished downloading all scraped images",
-    totalProcessed: items.length
-  });
+async function handleDownloadViaBackground(message, sendResponse) {
+  try {
+    await downloadGeneratedImage(message.imageUrl, message.index, message.promptText, message.downloadFolder);
+    sendResponse({ success: true });
+  } catch (error) {
+    sendResponse({ success: false, error: error.message });
+  }
 }
 
 function fetchScrapedDataUrl(tabId, imageUrl) {
