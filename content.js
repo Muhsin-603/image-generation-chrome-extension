@@ -355,7 +355,12 @@ async function handleProcessPrompt(promptText, sendResponse) {
   try {
     isProcessing = true;
     const imageUrl = await processPrompt(promptText);
-    const dataUrl = await fetchAsDataUrl(imageUrl);
+    
+    let dataUrl = imageUrl;
+    if (imageUrl && imageUrl.startsWith("blob:")) {
+      dataUrl = await fetchAsDataUrl(imageUrl);
+    }
+    
     sendResponse({ success: true, dataUrl: dataUrl });
   } catch (error) {
     sendResponse({ success: false, error: error.message });

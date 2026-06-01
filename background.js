@@ -338,7 +338,7 @@ async function handleDownloadScraped(message, sendResponse) {
 
     try {
       let dataUrl;
-      if (item.imageUrl.startsWith("data:")) {
+      if (item.imageUrl.startsWith("data:") || item.imageUrl.startsWith("http:") || item.imageUrl.startsWith("https:")) {
         dataUrl = item.imageUrl;
       } else {
         dataUrl = await fetchScrapedDataUrl(tabId, item.imageUrl);
