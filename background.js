@@ -9,10 +9,17 @@ const STATE = {
 };
 
 const DELAYS = {
-  BETWEEN_PROMPTS: 5000,
+  BETWEEN_PROMPTS_MIN: 10000, // 10s min delay
+  BETWEEN_PROMPTS_MAX: 30000, // 30s max delay
   RETRY_INTERVAL: 3000,
   MAX_RETRIES: 3
 };
+
+function getRandomDelay() {
+  const min = DELAYS.BETWEEN_PROMPTS_MIN;
+  const max = DELAYS.BETWEEN_PROMPTS_MAX;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
 
 // Rehydrate state from chrome.storage.local
 async function rehydrateState() {
@@ -259,7 +266,15 @@ async function processNextPrompt(capturedRunId) {
 
     STATE.currentIndex++;
     await saveState();
-    await delay(DELAYS.BETWEEN_PROMPTS);
+    const randomDelay = getRandomDelay();
+    broadcastProgress({
+      status: "processing",
+      currentIndex: STATE.currentIndex,
+      totalPrompts: STATE.promptQueue.length,
+      message: `Waiting ${Math.round(randomDelay / 1000)}s before next prompt...`
+    });
+    console.log(`Waiting ${randomDelay / 1000}s before next prompt to mimic human behavior...`);
+    await delay(randomDelay);
     if (capturedRunId !== STATE.runId) return;
 
     processNextPrompt(capturedRunId);
@@ -357,7 +372,15 @@ async function handlePromptCompleted(message, sendResponse) {
     await saveState();
     sendResponse({ received: true });
     
-    await delay(DELAYS.BETWEEN_PROMPTS);
+    const randomDelay = getRandomDelay();
+    broadcastProgress({
+      status: "processing",
+      currentIndex: STATE.currentIndex,
+      totalPrompts: totalPrompts,
+      message: `Waiting ${Math.round(randomDelay / 1000)}s before next prompt...`
+    });
+    console.log(`Waiting ${randomDelay / 1000}s before next prompt to mimic human behavior...`);
+    await delay(randomDelay);
     if (message.runId !== STATE.runId) return;
 
     processNextPrompt(STATE.runId);
@@ -378,7 +401,15 @@ async function handlePromptCompleted(message, sendResponse) {
     await saveState();
     sendResponse({ received: true });
     
-    await delay(DELAYS.BETWEEN_PROMPTS);
+    const randomDelay = getRandomDelay();
+    broadcastProgress({
+      status: "processing",
+      currentIndex: STATE.currentIndex,
+      totalPrompts: STATE.promptQueue.length,
+      message: `Waiting ${Math.round(randomDelay / 1000)}s before next prompt...`
+    });
+    console.log(`Waiting ${randomDelay / 1000}s before next prompt to mimic human behavior...`);
+    await delay(randomDelay);
     if (message.runId !== STATE.runId) return;
 
     processNextPrompt(STATE.runId);
