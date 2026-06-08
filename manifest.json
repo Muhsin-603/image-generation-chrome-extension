@@ -12,7 +12,9 @@
     "storage"
   ],
   "host_permissions": [
-    "*://chatgpt.com/*"
+    "https://chat.openai.com/*",
+    "*://chatgpt.com/*",
+    "*://*.openai.com/*"
   ],
   "side_panel": {
     "default_path": "sidepanel.html"
@@ -22,7 +24,11 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://chatgpt.com/*"],
+      "matches": [
+        "*://chat.openai.com/*",
+        "*://chatgpt.com/*",
+        "*://*.openai.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

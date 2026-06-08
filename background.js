@@ -116,7 +116,7 @@ function handleStartGeneration(message) {
   }).catch(error => {
     broadcastProgress({
       status: "error",
-      message: "Please open chatgpt.com in a tab first: " + error.message
+      message: "Please open ChatGPT (chat.openai.com) in a tab first: " + error.message
     });
     STATE.isRunning = false;
     saveState();
@@ -164,13 +164,31 @@ function handleGetStatus(sendResponse) {
 
 
 async function findChatGptTab() {
-  const tabs = await chrome.tabs.query({ url: "*://chatgpt.com/*" });
-
-  if (tabs.length === 0) {
-    throw new Error("No ChatGPT tab found");
+  // Try common ChatGPT/OpenAI hosts first, then fall back to scanning all tabs.
+  const patterns = ["*://chat.openai.com/*", "*://chatgpt.com/*", "*://*.openai.com/*"];
+  for (const pattern of patterns) {
+    try {
+      const tabs = await chrome.tabs.query({ url: pattern });
+      if (tabs && tabs.length > 0) return tabs[0].id;
+    } catch (e) {
+      // ignore and try next pattern
+    }
   }
 
-  return tabs[0].id;
+  // Final fallback: scan all tabs and match by hostname substring
+  const allTabs = await chrome.tabs.query({});
+  for (const tab of allTabs) {
+    try {
+      const url = tab.url || "";
+      if (url.includes("chat.openai.com") || url.includes("chatgpt.com") || url.includes(".openai.com")) {
+        return tab.id;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  throw new Error("No ChatGPT tab found");
 }
 
 async function ensureContentScriptReady(tabId) {
