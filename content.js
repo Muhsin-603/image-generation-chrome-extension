@@ -9,7 +9,7 @@ const SELECTORS = {
 };
 
 const TIMEOUTS = {
-  IMAGE_GENERATION: 180000,
+  IMAGE_GENERATION: 90000, // reduced from 180s to 90s to avoid long fallback waits
   ELEMENT_POLL_INTERVAL: 500,
   POST_SEND_DELAY: 2000,
   BETWEEN_PROMPTS_DELAY: 3000
@@ -60,27 +60,45 @@ function isMarkdownRenderedImage(img) {
   const src = img.src || img.getAttribute("src") || "";
   const alt = img.getAttribute("alt") || "";
   const className = img.className || "";
-
-  // Generated images must have a src and a non-empty alt (the description)
-  if (!src || !alt) return false;
-
-  // Exclude avatars, UI icons, formulas, and emojis
+n  // Require a src, but alt text is helpful and no longer mandatory
+  if (!src) return false;
+n  // Exclude avatars, UI icons, formulas, and emojis
   const excludeKeywords = ["avatar", "profile", "icon", "logo", "emoji", "favicon", "math", "katex", "formula"];
   const matchesExclude = excludeKeywords.some(keyword => {
     return src.toLowerCase().includes(keyword) || 
-           alt.toLowerCase().includes(keyword) || 
+           (alt && alt.toLowerCase().includes(keyword)) || 
            className.toLowerCase().includes(keyword);
   });
-
-  if (matchesExclude) return false;
-
-  // Verify it is inside the assistant message content (markdown/prose)
+n  if (matchesExclude) return false;
+n  // Verify it is inside the assistant message content (markdown/prose) or an assistant message container
   const isInsideContent = img.closest(".markdown") || 
                           img.closest(".prose") || 
                           img.closest('[class*="markdown"]') || 
-                          img.closest('[class*="prose"]');
+                          img.closest('[class*="prose"]') ||
+                          img.closest('[data-message-author-role="assistant"]') ||
+                          img.closest('article');
   
-  return !!isInsideContent;
+  if (!isInsideContent) return false;
+n  // Heuristics: accept if src looks like a generated image, or the image element has reasonable dimensions
+  const srcLower = src.toLowerCase();
+  const likelyImagePattern = srcLower.startsWith("blob:") ||
+                             srcLower.startsWith("data:") ||
+                             srcLower.includes("oaiusercontent") ||
+                             srcLower.includes("openai") ||
+                             srcLower.includes("dall-e") ||
+                             srcLower.endsWith(".png") ||
+                             srcLower.endsWith(".jpg") ||
+                             srcLower.endsWith(".jpeg") ||
+                             srcLower.endsWith(".webp");
+n  if (likelyImagePattern) return true;
+n  try {
+    if (img.naturalWidth && img.naturalHeight && (img.naturalWidth >= 48 || img.naturalHeight >= 48)) {
+      return true;
+    }
+  } catch (e) {
+    // ignore
+  }
+n  return false;
 }
 
 function findChatContainer() {
@@ -182,95 +200,135 @@ function waitForImageGeneration(messageCountBeforeSend) {
     }
 
     let timeoutId;
-    let checkIntervalId;
+    let observer;
+    let fallbackInterval;
 
     const cleanup = () => {
+      if (observer) observer.disconnect();
       clearTimeout(timeoutId);
-      clearInterval(checkIntervalId);
+      if (fallbackInterval) clearInterval(fallbackInterval);
     };
 
-    const checkForNewImage = () => {
-      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
-      if (assistantMessages.length <= messageCountBeforeSend) return null;
+    const checkNodeForImage = (node) => {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
 
-      const latestMessage = assistantMessages[assistantMessages.length - 1];
-      const imageElements = latestMessage.querySelectorAll("img");
-
-      for (const img of imageElements) {
-        if (isMarkdownRenderedImage(img)) {
-          return img;
-        }
+      // Check images inside node
+      const imgs = node.querySelectorAll("img");
+      for (const img of imgs) {
+        if (isMarkdownRenderedImage(img)) return img;
       }
 
-      // Fallback: check links inside the markdown/prose content
-      const downloadLinks = latestMessage.querySelectorAll(".markdown a[href], .prose a[href], [class*='markdown'] a[href], [class*='prose'] a[href]");
-      for (const link of downloadLinks) {
-        const href = link.href || link.getAttribute("href");
-        if (href) {
-          const hrefLower = href.toLowerCase();
-          const matchesPattern = href.startsWith("blob:") || 
-                                 href.startsWith("data:") ||
-                                 hrefLower.includes("oaiusercontent") || 
-                                 hrefLower.includes("openai") || 
-                                 hrefLower.includes("dall-e") ||
-                                 hrefLower.includes(".png") ||
-                                 hrefLower.includes(".jpg") ||
-                                 hrefLower.includes(".jpeg") ||
-                                 hrefLower.includes(".webp");
-          if (matchesPattern) {
-            return link;
-          }
-        }
+      // Check links that look like images
+      const links = node.querySelectorAll("a[href]");
+      for (const link of links) {
+        const href = link.href || link.getAttribute("href") || "";
+        const hrefLower = href.toLowerCase();
+        const matchesPattern = href.startsWith("blob:") ||
+                               href.startsWith("data:") ||
+                               hrefLower.includes("oaiusercontent") ||
+                               hrefLower.includes("openai") ||
+                               hrefLower.includes("dall-e") ||
+                               hrefLower.includes(".png") ||
+                               hrefLower.includes(".jpg") ||
+                               hrefLower.includes(".jpeg") ||
+                               hrefLower.includes(".webp");
+        if (matchesPattern) return link;
       }
 
       return null;
     };
 
-    let completionDetectedTime = null;
-
-    checkIntervalId = setInterval(() => {
-      dismissComparisonDialog();
-
-      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
-      if (assistantMessages.length <= messageCountBeforeSend) {
-        return; // Wait for the assistant response to start appearing
+    // Quick initial check: maybe the image is already present in a newly appended assistant message
+    try {      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+      if (assistantMessages.length > messageCountBeforeSend) {
+        const latestMessage = assistantMessages[assistantMessages.length - 1];
+        const found = checkNodeForImage(latestMessage);
+        if (found) {
+          resolve(found);
+          return;
+        }
+      } else if (assistantMessages.length > 0) {
+        // Some flows update the last message in-place; check it too
+        const latestMessage = assistantMessages[assistantMessages.length - 1];
+        const found = checkNodeForImage(latestMessage);
+        if (found) {
+          resolve(found);
+          return;
+        }
       }
+    } catch (e) {
+      // ignore and continue to observer
+    }
 
-      const latestMessage = assistantMessages[assistantMessages.length - 1];
-
-      // First, check if the image has already appeared in the latest message.
-      const imgElement = checkForNewImage();
-      if (imgElement) {
-        cleanup();
-        resolve(imgElement);
-        return;
+    // Observe the chat container for new assistant messages / images / attribute changes
+    observer = new MutationObserver((mutations) => {
+      for (const mut of mutations) {
+        if (mut.type === 'childList') {
+          for (const node of mut.addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            const el = /** @type {Element} */ (node);
+            // If an assistant message node was added, check it
+            if (el.matches && el.matches(SELECTORS.ASSISTANT_MESSAGE)) {
+              const found = checkNodeForImage(el);
+              if (found) {
+                cleanup();
+                resolve(found);
+                return;
+              }
+            }
+            // Otherwise check the subtree for images/links
+            const foundSub = checkNodeForImage(el);
+            if (foundSub) {
+              cleanup();
+              resolve(foundSub);
+              return;
+            }
+          }
+        } else if (mut.type === 'attributes') {
+          const target = mut.target;
+          const container = target.closest ? target.closest(SELECTORS.ASSISTANT_MESSAGE) : null;
+          const toCheck = container || target;
+          const foundAttr = checkNodeForImage(toCheck);
+          if (foundAttr) {
+            cleanup();
+            resolve(foundAttr);
+            return;
+          }
+        }
       }
+    });
 
-      // Check if the latest message is still actively streaming/typing.
-      const isStreaming = isMessageStreaming(latestMessage);
-      if (isStreaming) {
-        // Reset completion timer since generation is still actively running
-        completionDetectedTime = null;
-        return;
+    observer.observe(chatContainer, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href'] });
+
+    // Fallback periodic check (in case observer misses something)
+    fallbackInterval = setInterval(() => {
+      const assistantMessagesNow = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+      if (assistantMessagesNow.length > messageCountBeforeSend) {
+        const latestMessage = assistantMessagesNow[assistantMessagesNow.length - 1];
+        const found = checkNodeForImage(latestMessage);
+        if (found) {
+          cleanup();
+          resolve(found);
+          return;
+        }
+      } else if (assistantMessagesNow.length > 0) {
+        const latestMessage = assistantMessagesNow[assistantMessagesNow.length - 1];
+        const found = checkNodeForImage(latestMessage);
+        if (found) {
+          cleanup();
+          resolve(found);
+          return;
+        }
       }
+    }, TIMEOUTS.ELEMENT_POLL_INTERVAL);
 
-      // Start the grace period timer when streaming first stops
-      if (completionDetectedTime === null) {
-        completionDetectedTime = Date.now();
-      }
-
-      // If we've waited less than the grace period (5 seconds), keep waiting for the image to be appended
-      const gracePeriodMs = 5000;
-      if (Date.now() - completionDetectedTime < gracePeriodMs) {
-        return; // Wait for the next tick
-      }
-
-      // Response is complete and grace period has expired, but no DALL-E image was found.
+    // Global timeout
+    timeoutId = setTimeout(() => {
       cleanup();
-      
-      let errorMsg = "Response completed but no image was found.";
-      const responseText = (latestMessage.textContent || "").trim();
-      if (responseText) {
+      reject(new Error("Image generation timed out after " + (TIMEOUTS.IMAGE_GENERATION / 1000) + " seconds"));
+    }, TIMEOUTS.IMAGE_GENERATION);
+  });
+}
         errorMsg = `ChatGPT responded: "${responseText}"`;
       }
       reject(new Error(errorMsg));
