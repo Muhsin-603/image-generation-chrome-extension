@@ -60,17 +60,21 @@ function isMarkdownRenderedImage(img) {
   const src = img.src || img.getAttribute("src") || "";
   const alt = img.getAttribute("alt") || "";
   const className = img.className || "";
-n  // Require a src, but alt text is helpful and no longer mandatory
+
+  // Require a src, but alt text is helpful and no longer mandatory
   if (!src) return false;
-n  // Exclude avatars, UI icons, formulas, and emojis
+
+  // Exclude avatars, UI icons, formulas, and emojis
   const excludeKeywords = ["avatar", "profile", "icon", "logo", "emoji", "favicon", "math", "katex", "formula"];
   const matchesExclude = excludeKeywords.some(keyword => {
     return src.toLowerCase().includes(keyword) || 
            (alt && alt.toLowerCase().includes(keyword)) || 
            className.toLowerCase().includes(keyword);
   });
-n  if (matchesExclude) return false;
-n  // Verify it is inside the assistant message content (markdown/prose) or an assistant message container
+
+  if (matchesExclude) return false;
+
+  // Verify it is inside the assistant message content (markdown/prose) or an assistant message container
   const isInsideContent = img.closest(".markdown") || 
                           img.closest(".prose") || 
                           img.closest('[class*="markdown"]') || 
@@ -79,7 +83,8 @@ function isMarkdownRenderedImage(img) {
                           img.closest('article');
   
   if (!isInsideContent) return false;
-n  // Heuristics: accept if src looks like a generated image, or the image element has reasonable dimensions
+
+  // Heuristics: accept if src looks like a generated image, or the image element has reasonable dimensions
   const srcLower = src.toLowerCase();
   const likelyImagePattern = srcLower.startsWith("blob:") ||
                              srcLower.startsWith("data:") ||
@@ -90,15 +95,18 @@ function isMarkdownRenderedImage(img) {
                              srcLower.endsWith(".jpg") ||
                              srcLower.endsWith(".jpeg") ||
                              srcLower.endsWith(".webp");
-n  if (likelyImagePattern) return true;
-n  try {
+
+  if (likelyImagePattern) return true;
+
+  try {
     if (img.naturalWidth && img.naturalHeight && (img.naturalWidth >= 48 || img.naturalHeight >= 48)) {
       return true;
     }
   } catch (e) {
     // ignore
   }
-n  return false;
+
+  return false;
 }
 
 function findChatContainer() {
@@ -120,17 +128,32 @@ function typePromptText(promptText) {
 
   inputElement.focus();
   
-  // Clear existing text securely
-  document.execCommand('selectAll', false, null);
-  document.execCommand('delete', false, null);
+  // Clear existing content
+  inputElement.innerHTML = "";
   
-  // Use native execution command to insert the text, bypassing clipboard sandbox policies
-  document.execCommand('insertText', false, promptText);
+  // Create paragraph container inside contenteditable
+  const p = document.createElement("p");
+  p.textContent = promptText;
+  inputElement.appendChild(p);
   
-  // Dispatch input event to trigger React/Lexical listeners
-  const inputEvent = new Event('input', {
+  // Position the text insertion selection at the end
+  try {
+    const range = document.createRange();
+    const sel = window.getSelection();
+    range.selectNodeContents(p);
+    range.collapse(false); // collapse to end
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (err) {
+    console.warn("Failed to set selection range:", err);
+  }
+
+  // Dispatch events to trigger editor framework updates
+  const inputEvent = new InputEvent("input", {
     bubbles: true,
-    cancelable: true
+    cancelable: true,
+    inputType: "insertText",
+    data: promptText
   });
   inputElement.dispatchEvent(inputEvent);
 }
@@ -238,8 +261,23 @@ function waitForImageGeneration(messageCountBeforeSend) {
       return null;
     };
 
+    const checkForTextRefusal = () => {
+      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+      if (assistantMessages.length > messageCountBeforeSend) {
+        const latestMessage = assistantMessages[assistantMessages.length - 1];
+        if (!isMessageStreaming(latestMessage) && !findStopButton()) {
+          const found = checkNodeForImage(latestMessage);
+          if (!found) {
+            return (latestMessage.textContent || "").trim();
+          }
+        }
+      }
+      return null;
+    };
+
     // Quick initial check: maybe the image is already present in a newly appended assistant message
-    try {      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
+    try {
+      const assistantMessages = document.querySelectorAll(SELECTORS.ASSISTANT_MESSAGE);
       if (assistantMessages.length > messageCountBeforeSend) {
         const latestMessage = assistantMessages[assistantMessages.length - 1];
         const found = checkNodeForImage(latestMessage);
@@ -255,6 +293,12 @@ function waitForImageGeneration(messageCountBeforeSend) {
           resolve(found);
           return;
         }
+      }
+
+      const refusalText = checkForTextRefusal();
+      if (refusalText) {
+        reject(new Error(`Text response received: "${refusalText.substring(0, 150)}..."`));
+        return;
       }
     } catch (e) {
       // ignore and continue to observer
@@ -296,6 +340,13 @@ function waitForImageGeneration(messageCountBeforeSend) {
           }
         }
       }
+
+      // Check for text refusal on mutations
+      const refusalText = checkForTextRefusal();
+      if (refusalText) {
+        cleanup();
+        reject(new Error(`Text response received: "${refusalText.substring(0, 150)}..."`));
+      }
     });
 
     observer.observe(chatContainer, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href'] });
@@ -320,29 +371,17 @@ function waitForImageGeneration(messageCountBeforeSend) {
           return;
         }
       }
+
+      const refusalText = checkForTextRefusal();
+      if (refusalText) {
+        cleanup();
+        reject(new Error(`Text response received: "${refusalText.substring(0, 150)}..."`));
+      }
     }, TIMEOUTS.ELEMENT_POLL_INTERVAL);
 
     // Global timeout
     timeoutId = setTimeout(() => {
       cleanup();
-      reject(new Error("Image generation timed out after " + (TIMEOUTS.IMAGE_GENERATION / 1000) + " seconds"));
-    }, TIMEOUTS.IMAGE_GENERATION);
-  });
-}
-        errorMsg = `ChatGPT responded: "${responseText}"`;
-      }
-      reject(new Error(errorMsg));
-    }, TIMEOUTS.ELEMENT_POLL_INTERVAL);
-
-    timeoutId = setTimeout(() => {
-      cleanup();
-
-      const imgElement = checkForNewImage();
-      if (imgElement) {
-        resolve(imgElement);
-        return;
-      }
-
       reject(new Error("Image generation timed out after " + (TIMEOUTS.IMAGE_GENERATION / 1000) + " seconds"));
     }, TIMEOUTS.IMAGE_GENERATION);
   });
@@ -524,6 +563,7 @@ async function triggerModalDownload(imgElement) {
 }
 
 async function processPrompt(promptText) {
+  dismissComparisonDialog();
   const messageCountBeforeSend = countAssistantMessages();
 
   typePromptText(promptText);
@@ -589,6 +629,10 @@ async function fetchAsDataUrl(url) {
 }
 
 function handleStartPrompt(message, sendResponse) {
+  if (isProcessing) {
+    sendResponse({ success: false, error: "Content script is already processing a prompt" });
+    return;
+  }
   sendResponse({ success: true, status: "started" });
 
   isProcessing = true;

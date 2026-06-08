@@ -265,8 +265,8 @@ function removePromptAt(index) {
         addLogEntry("Failed to remove prompt: " + chrome.runtime.lastError.message, "error");
         return;
       }
-      if (response && response.success) {
-        parsedPrompts.splice(index, 1);
+      if (response && response.success && response.queue) {
+        parsedPrompts = response.queue;
         renderPromptsList(parsedPrompts);
         highlightActivePrompt(currentActiveIndex);
         updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
@@ -576,15 +576,23 @@ function downloadScrapedImages() {
 function addManualPrompt() {
   const text = elements.manualPromptInput.value.trim();
   if (text) {
-    parsedPrompts.push(text);
-    renderPromptsList(parsedPrompts);
-
     if (!elements.startButton.hidden) {
+      parsedPrompts.push(text);
+      renderPromptsList(parsedPrompts);
       elements.startButton.disabled = false;
     } else {
-      highlightActivePrompt(currentActiveIndex);
-      chrome.runtime.sendMessage({ type: "ADD_PROMPT", prompt: text });
-      updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
+      chrome.runtime.sendMessage({ type: "ADD_PROMPT", prompt: text }, response => {
+        if (chrome.runtime.lastError) {
+          addLogEntry("Failed to add prompt: " + chrome.runtime.lastError.message, "error");
+          return;
+        }
+        if (response && response.queue) {
+          parsedPrompts = response.queue;
+          renderPromptsList(parsedPrompts);
+          highlightActivePrompt(currentActiveIndex);
+          updateProgress(currentActiveIndex, parsedPrompts.length, elements.progressLabel.textContent);
+        }
+      });
     }
 
     elements.manualPromptInput.value = "";

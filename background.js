@@ -81,8 +81,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       GET_STATUS: () => handleGetStatus(sendResponse),
       SCRAPE_CHAT: () => handleScrapeChatRequest(sendResponse),
       DOWNLOAD_SCRAPED: () => handleDownloadScraped(message, sendResponse),
-      ADD_PROMPT: () => handleAddPrompt(message.prompt),
-      REMOVE_PROMPT: () => sendResponse({ success: handleRemovePrompt(message.index) }),
+      ADD_PROMPT: () => sendResponse(handleAddPrompt(message.prompt)),
+      REMOVE_PROMPT: () => sendResponse(handleRemovePrompt(message.index)),
       PROMPT_COMPLETED: () => handlePromptCompleted(message, sendResponse),
       DOWNLOAD_VIA_BACKGROUND: () => handleDownloadViaBackground(message, sendResponse)
     };
@@ -90,7 +90,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const handler = handlers[message.type];
     if (handler) {
       handler();
-      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED", "REMOVE_PROMPT", "PROMPT_COMPLETED", "DOWNLOAD_VIA_BACKGROUND"];
+      const exclusions = ["GET_STATUS", "SCRAPE_CHAT", "DOWNLOAD_SCRAPED", "REMOVE_PROMPT", "ADD_PROMPT", "PROMPT_COMPLETED", "DOWNLOAD_VIA_BACKGROUND"];
       if (!exclusions.includes(message.type)) {
         sendResponse({ received: true });
       }
@@ -288,18 +288,19 @@ function sendStartPromptToContentScript(promptText, index, runId) {
 }
 
 async function handlePromptCompleted(message, sendResponse) {
-  sendResponse({ received: true });
-
   if (message.runId !== STATE.runId) {
     console.log(`handlePromptCompleted: Run ID mismatch (${message.runId} vs ${STATE.runId}). Ignoring.`);
+    sendResponse({ received: false, error: "Run ID mismatch" });
     return;
   }
   if (message.index !== STATE.currentIndex) {
     console.log(`handlePromptCompleted: Index mismatch (${message.index} vs ${STATE.currentIndex}). Ignoring.`);
+    sendResponse({ received: false, error: "Index mismatch" });
     return;
   }
   if (!STATE.isRunning || STATE.isPaused) {
     console.log("handlePromptCompleted: Generation is not running or is paused. Ignoring.");
+    sendResponse({ received: false, error: "Not running or paused" });
     return;
   }
 
@@ -354,13 +355,18 @@ async function handlePromptCompleted(message, sendResponse) {
 
     STATE.currentIndex++;
     await saveState();
+    sendResponse({ received: true });
+    
     await delay(DELAYS.BETWEEN_PROMPTS);
     if (message.runId !== STATE.runId) return;
 
     processNextPrompt(STATE.runId);
 
   } catch (error) {
-    if (message.runId !== STATE.runId) return;
+    if (message.runId !== STATE.runId) {
+      sendResponse({ received: false, error: error.message });
+      return;
+    }
 
     broadcastProgress({
       status: "error",
@@ -370,6 +376,8 @@ async function handlePromptCompleted(message, sendResponse) {
 
     STATE.currentIndex++;
     await saveState();
+    sendResponse({ received: true });
+    
     await delay(DELAYS.BETWEEN_PROMPTS);
     if (message.runId !== STATE.runId) return;
 
@@ -482,13 +490,14 @@ function fetchScrapedDataUrl(tabId, imageUrl) {
 function handleAddPrompt(prompt) {
   STATE.promptQueue.push(prompt);
   saveState();
+  return { success: true, queue: STATE.promptQueue };
 }
 
 function handleRemovePrompt(index) {
   if (index > STATE.currentIndex) {
     STATE.promptQueue.splice(index, 1);
     saveState();
-    return true;
+    return { success: true, queue: STATE.promptQueue };
   }
-  return false;
+  return { success: false };
 }
