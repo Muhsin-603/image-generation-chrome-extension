@@ -13,7 +13,7 @@ A Chrome extension (Manifest V3) that automates batch image generation in ChatGP
 1. Open Chrome and go to `chrome://extensions/`.
 2. Enable **Developer mode** (top-right).
 3. Click **Load unpacked** and select this repository folder.
-4. Open a ChatGPT tab (the extension uses `*://chatgpt.com/*` by default). If you use `https://chat.openai.com/`, update `manifest.json` `host_permissions` and any domain checks in `background.js`/`content.js`.
+4. Open a ChatGPT tab (the extension supports `chat.openai.com` and `chatgpt.com` by default). If you use a different domain, update `manifest.json` `host_permissions` and any domain checks in `background.js`/`content.js`. If the extension doesn't detect ChatGPT, reload the extension and open the ChatGPT tab.
 5. Open the extension's side panel (click the extension icon / side panel) and use the UI.
 
 ## Usage
@@ -38,7 +38,7 @@ A Chrome extension (Manifest V3) that automates batch image generation in ChatGP
 - Inspect content script behavior in the ChatGPT tab's DevTools (Console) to view messages, element selection issues, or network errors.
 
 ## Notes & troubleshooting
-- Domain matching: the manifest currently uses `*://chatgpt.com/*`. If ChatGPT is available at `chat.openai.com`, update `manifest.json` and `background.findChatGptTab()` to match the actual domain.
+- Domain matching: the manifest now includes `https://chat.openai.com/*` and `*://*.openai.com/*`; `background.findChatGptTab()` searches common hosts and falls back to scanning open tabs. If you use a different domain, update `manifest.json` `host_permissions` accordingly.
 - UI selectors in `content.js` are tuned to current ChatGPT markup and may break if the site updates. If images are not detected or prompts fail to send, update selectors in `content.js`.
 - The extension tries to convert `blob:` URLs to data URLs when needed. Cross-origin image downloads may be delegated to the background download flow.
 
